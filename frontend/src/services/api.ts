@@ -10,6 +10,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     throw new Error(`API error: ${res.status} ${res.statusText}`);
   }
+  // 204 No Content (e.g. DELETE) — no body to parse.
+  if (res.status === 204) {
+    return undefined as T;
+  }
   const json = await res.json();
   return json.data as T;
 }
@@ -21,7 +25,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  listTasks: () => request<Task[]>('/api/v1/tasks'),
+  // The backend returns { "data": null } when there are no tasks; coalesce to
+  // an empty array so callers can always .filter/.map safely.
+  listTasks: async (): Promise<Task[]> => {
+    const data = await request<Task[] | null>('/api/v1/tasks');
+    return data ?? [];
+  },
 
   getTask: (id: string) => request<Task>(`/api/v1/tasks/${id}`),
 
