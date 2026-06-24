@@ -29,6 +29,7 @@ frontend-dev:
 
 frontend-build:
 	cd frontend && npm run build
+	rm -rf web && mkdir -p web && cp -r frontend/dist/* web/
 
 docker-build:
 	docker build -t kanbanai .

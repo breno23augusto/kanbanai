@@ -9,18 +9,37 @@ import { useSSE } from '../hooks/useSSE';
 import { Task } from '../types/task';
 import { SSEEvent } from '../types/event';
 
+// Reload the board on any event that mutates task state/phase. The backend
+// publishes phase.* (started/completed/failed/retry), lane.* and task.* events;
+// note that task.status_changed is currently never emitted, so we key off the
+// phase/lane/harness events to stay in sync. Progress/output events are
+// intentionally ignored to avoid refetching on every heartbeat.
+const RELOAD_PREFIXES = ['task.', 'lane.', 'phase.', 'harness.error'];
+
+function shouldReload(type: string): boolean {
+  if (type === 'phase.done.reached') return true;
+  return RELOAD_PREFIXES.some((p) => type.startsWith(p)) && !type.endsWith('.progress');
+}
+
 export const Dashboard: React.FC = () => {
   const { tasks, loading, createTask, reload } = useTasks();
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
   const handleSSEEvent = useCallback((event: SSEEvent) => {
-    if (['task.created', 'task.updated', 'task.deleted', 'task.status_changed'].includes(event.type)) {
+    if (shouldReload(event.type)) {
       reload();
     }
   }, [reload]);
 
   useSSE(handleSSEEvent);
+
+  const handleCreate = useCallback(
+    async (title: string, description: string, priority: number) => {
+      await createTask(title, description, priority);
+    },
+    [createTask],
+  );
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
@@ -50,7 +69,7 @@ export const Dashboard: React.FC = () => {
       <CreateTaskDialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreate={createTask}
+        onCreate={handleCreate}
       />
 
       <TaskDetailDrawer

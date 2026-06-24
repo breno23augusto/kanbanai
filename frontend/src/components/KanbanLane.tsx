@@ -1,15 +1,14 @@
 import React from 'react';
-import { Task, Phase } from '../types/task';
+import { Task } from '../types/task';
 import { TaskCard } from './TaskCard';
 import { Box } from '@mui/material';
 
 interface KanbanLaneProps {
-  phase: Phase;
   tasks: Task[];
   onTaskClick: (task: Task) => void;
 }
 
-export const KanbanLane: React.FC<KanbanLaneProps> = ({ phase, tasks, onTaskClick }) => {
+export const KanbanLane: React.FC<KanbanLaneProps> = ({ tasks, onTaskClick }) => {
   return (
     <Box
       sx={{

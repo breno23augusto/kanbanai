@@ -20,7 +20,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, onTaskClick }) 
             {PHASE_LABELS[phase]} ({getTasksByPhase(phase).length})
           </Typography>
           <KanbanLane
-            phase={phase}
             tasks={getTasksByPhase(phase)}
             onTaskClick={onTaskClick}
           />
