@@ -1,0 +1,114 @@
+/* KanbanAI — instrument console. Global primitives & motion. */
+
+:root {
+  --kai-base: #0e151c;
+  --kai-panel: #161f2a;
+  --kai-hair: #26323f;
+  --kai-cyan: #4fd1c5;
+  --kai-amber: #f0a93b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--kai-base);
+  /* faint grid bleed so the console reads as a panel, not a void */
+  background-image:
+    linear-gradient(to right, rgba(38, 50, 63, 0.18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(38, 50, 63, 0.18) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-position: -1px -1px;
+  color: #dce4ee;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "ss01", "cv01";
+}
+
+::selection {
+  background: rgba(79, 209, 197, 0.28);
+  color: #ffffff;
+}
+
+/* thin, dark scrollbars that belong on an instrument */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #26323f transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #243140;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #34465a;
+  background-clip: padding-box;
+}
+
+/* signal-lamp pulse for live/active elements */
+@keyframes kai-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent);
+  }
+}
+.kai-pulse {
+  animation: kai-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* scan sweep for the active (in-progress) card */
+@keyframes kai-scan {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(110%);
+  }
+}
+.kai-scan::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(79, 209, 197, 0.06) 45%,
+    rgba(79, 209, 197, 0.12) 50%,
+    rgba(79, 209, 197, 0.06) 55%,
+    transparent 100%
+  );
+  animation: kai-scan 3.2s linear infinite;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kai-pulse,
+  .kai-scan::after {
+    animation: none !important;
+  }
+  .kai-pulse {
+    opacity: 1 !important;
+  }
+}

@@ -1,7 +1,7 @@
 import React from 'react';
-import { Task, Phase, PHASE_ORDER, PHASE_LABELS } from '../types/task';
+import { Task, Phase, PHASE_ORDER } from '../types/task';
 import { KanbanLane } from './KanbanLane';
-import { Box, Typography } from '@mui/material';
+import { Box } from '@mui/material';
 
 interface KanbanBoardProps {
   tasks: Task[];
@@ -9,18 +9,36 @@ interface KanbanBoardProps {
 }
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, onTaskClick }) => {
-  const getTasksByPhase = (phase: Phase): Task[] =>
-    tasks.filter((t) => t.current_phase === phase);
+  const byPhase = (phase: Phase): Task[] => tasks.filter((t) => t.current_phase === phase);
 
   return (
-    <Box sx={{ display: 'flex', gap: 2, overflowX: 'auto', p: 2, minHeight: '80vh' }}>
-      {PHASE_ORDER.map((phase) => (
-        <Box key={phase} sx={{ minWidth: 280, flex: 1 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1, color: 'text.secondary', textTransform: 'uppercase', fontSize: '0.75rem', letterSpacing: 1 }}>
-            {PHASE_LABELS[phase]} ({getTasksByPhase(phase).length})
-          </Typography>
+    <Box
+      sx={{
+        display: 'flex',
+        gap: 1.5,
+        overflowX: 'auto',
+        overflowY: 'hidden',
+        px: 2,
+        pb: 2,
+        flex: 1,
+        minHeight: 0,
+      }}
+    >
+      {PHASE_ORDER.map((phase, i) => (
+        <Box
+          key={phase}
+          sx={{
+            flex: '1 0 268px',
+            maxWidth: 320,
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+          }}
+        >
           <KanbanLane
-            tasks={getTasksByPhase(phase)}
+            phase={phase}
+            index={i}
+            tasks={byPhase(phase)}
             onTaskClick={onTaskClick}
           />
         </Box>
