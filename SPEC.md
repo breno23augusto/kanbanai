@@ -128,6 +128,7 @@ type Handler func(event Event)
 
 type Dispatcher interface {
     Subscribe(eventType EventType, handler Handler)
+    SubscribeAll(handler Handler)  // Wildcard: recebe todos os eventos publicados
     Publish(event Event)
 }
 ```
@@ -157,23 +158,36 @@ Os eventos cobrem todo o ciclo de vida de uma task, garantindo rastreabilidade c
 
 ### 5.3 Eventos de Fase (por raia)
 
+Todos os eventos de fase seguem uma estrutura previsível e são disparados em todas as fases não terminais (planning, todo, doing, validating, testing).
+
 | Evento                        | Momento de Disparo                                    |
 |-------------------------------|-------------------------------------------------------|
 | `phase.planning.started`      | Harness iniciou a fase de planning                    |
-| `phase.planning.progress`     | Harness reportou progresso na fase                    |
+| `phase.planning.progress`     | Harness reportou progresso parcial na fase            |
+| `phase.planning.retry`        | Tentativa falhou, executando retry da fase            |
 | `phase.planning.completed`    | Harness finalizou planning com sucesso                |
-| `phase.planning.failed`       | Falha na fase de planning                             |
-| `phase.todo.started`          | Idem para cada raia subsequente                       |
-| `phase.todo.completed`        | ...                                                   |
-| `phase.doing.started`         | ...                                                   |
-| `phase.doing.progress`        | ...                                                   |
-| `phase.doing.completed`       | ...                                                   |
-| `phase.validating.started`    | ...                                                   |
-| `phase.validating.completed`  | ...                                                   |
-| `phase.testing.started`       | ...                                                   |
-| `phase.testing.progress`      | ...                                                   |
-| `phase.testing.completed`     | ...                                                   |
-| `phase.done.reached`          | Task chegou na raia Done                              |
+| `phase.planning.failed`       | Falha terminal na fase de planning                    |
+| `phase.todo.started`          | Início da fase Todo                                   |
+| `phase.todo.progress`         | Progresso reportado na fase Todo                      |
+| `phase.todo.retry`            | Tentativa falhou, executando retry de Todo            |
+| `phase.todo.completed`        | Fase Todo concluída                                   |
+| `phase.todo.failed`           | Falha terminal na fase Todo                           |
+| `phase.doing.started`         | Início da fase Doing                                  |
+| `phase.doing.progress`        | Progresso reportado na fase Doing                     |
+| `phase.doing.retry`           | Tentativa falhou, executando retry de Doing           |
+| `phase.doing.completed`       | Fase Doing concluída                                  |
+| `phase.doing.failed`          | Falha terminal na fase Doing                          |
+| `phase.validating.started`    | Início da fase Validating                             |
+| `phase.validating.progress`   | Progresso reportado na fase Validating                |
+| `phase.validating.retry`      | Tentativa falhou, executando retry de Validating      |
+| `phase.validating.completed`  | Fase Validating concluída                             |
+| `phase.validating.failed`     | Falha terminal na fase Validating                     |
+| `phase.testing.started`       | Início da fase Testing                                |
+| `phase.testing.progress`      | Progresso reportado na fase Testing                   |
+| `phase.testing.retry`         | Tentativa falhou, executando retry de Testing         |
+| `phase.testing.completed`     | Fase Testing concluída                                |
+| `phase.testing.failed`        | Falha terminal na fase Testing                        |
+| `phase.done.reached`          | Task chegou na raia final Done                        |
 
 ### 5.4 Eventos de Harness
 
@@ -282,6 +296,153 @@ Task ID: {{ .Task.ID }}
 Phase: planning
 ```
 
+### 6.3 Lógica Interna do PhaseOrchestrator
+
+O `PhaseOrchestrator` é o serviço central que coordena a execução das fases. Ele **não** é um use case — é um serviço de aplicação que reage a eventos e gerencia o ciclo de vida dos processos harness.
+
+```go
+// internal/application/service/phase_orchestrator.go
+type PhaseOrchestrator struct {
+    taskRepo        repository.TaskRepository
+    phaseOutputRepo repository.PhaseOutputRepository
+    harnessAdapter  port.HarnessPort
+    promptBuilder   *PromptBuilder
+    dispatcher      event.Dispatcher
+    processRegistry map[string]*exec.Cmd  // taskID → harness process
+    mu              sync.RWMutex
+}
+```
+
+#### 6.3.1 StartFlow — Início do Fluxo
+
+Iniciado quando o evento `task.created` é disparado. Começa sempre pela fase `Planning`:
+
+```go
+func (o *PhaseOrchestrator) StartFlow(ctx context.Context, task *entity.Task) error {
+    o.dispatcher.Publish(event.Event{
+        Type: event.PhasePlanningStarted, TaskID: task.ID,
+        Payload: map[string]any{"phase": entity.PhasePlanning},
+    })
+    prompt, err := o.promptBuilder.Build(entity.PhasePlanning, task)
+    if err != nil {
+        return fmt.Errorf("prompt build: %w", err)
+    }
+    if err := o.harnessAdapter.Dispatch(ctx, task, entity.PhasePlanning, prompt); err != nil {
+        return fmt.Errorf("harness dispatch: %w", err)
+    }
+    return nil
+}
+```
+
+#### 6.3.2 AdvancePhase — Avançar para Próxima Fase
+
+Chamado pelos subscribers de eventos `phase.*.completed`. **Não** é o mesmo que o use case `AdvancePhase` (veja distinção em 6.3.5):
+
+```go
+func (o *PhaseOrchestrator) AdvancePhase(ctx context.Context, taskID string) error {
+    task, err := o.taskRepo.Find(ctx, taskID)
+    if err != nil {
+        return fmt.Errorf("find task: %w", err)
+    }
+    nextPhase, hasNext := task.CurrentPhase.Next()
+    if !hasNext || task.CurrentPhase.IsTerminal() {
+        task.Status = entity.StatusCompleted
+        task.UpdatedAt = time.Now()
+        if err := o.taskRepo.Update(ctx, task); err != nil {
+            return fmt.Errorf("update task: %w", err)
+        }
+        o.dispatcher.Publish(event.Event{
+            Type: event.PhaseDoneReached, TaskID: task.ID,
+        })
+        return nil
+    }
+    task.CurrentPhase = nextPhase
+    task.Status = entity.StatusPending
+    task.UpdatedAt = time.Now()
+    if err := o.taskRepo.Update(ctx, task); err != nil {
+        return fmt.Errorf("update task: %w", err)
+    }
+    o.dispatcher.Publish(event.Event{
+        Type: event.LaneTransitionCompleted, TaskID: task.ID,
+        Payload: map[string]any{"from": task.CurrentPhase, "to": nextPhase},
+    })
+    return o.dispatchPhase(ctx, task, nextPhase)
+}
+```
+
+#### 6.3.3 dispatchPhase (método interno)
+
+```go
+func (o *PhaseOrchestrator) dispatchPhase(ctx context.Context, task *entity.Task, phase entity.Phase) error {
+    task.Status = entity.StatusInProgress
+    task.UpdatedAt = time.Now()
+    if err := o.taskRepo.Update(ctx, task); err != nil {
+        return fmt.Errorf("update task status: %w", err)
+    }
+    o.dispatcher.Publish(event.Event{
+        Type: event.PhaseEvent(phase, "started"), TaskID: task.ID,
+        Payload: map[string]any{"phase": phase},
+    })
+    prompt, err := o.promptBuilder.Build(phase, task)
+    if err != nil {
+        return fmt.Errorf("prompt build: %w", err)
+    }
+    return o.harnessAdapter.Dispatch(ctx, task, phase, prompt)
+}
+```
+
+#### 6.3.4 KillProcess — Interrupção de Harness
+
+Usado quando uma task é deletada durante execução:
+
+```go
+func (o *PhaseOrchestrator) KillProcess(taskID string) {
+    o.mu.RLock()
+    cmd, exists := o.processRegistry[taskID]
+    o.mu.RUnlock()
+    if exists && cmd.Process != nil {
+        cmd.Process.Signal(syscall.SIGKILL)
+        o.mu.Lock()
+        delete(o.processRegistry, taskID)
+        o.mu.Unlock()
+    }
+}
+```
+
+#### 6.3.5 Distinção Crítica: `PhaseOrchestrator.AdvancePhase` vs Use Case `AdvancePhase`
+
+| Método | Quem chama | O que faz |
+|--------|-----------|-----------|
+| **Use Case `AdvancePhase`** (`advance_phase.go`) | MCP tool `complete_phase` | **Persiste a conclusão da fase**: salva `PhaseOutput`, atualiza `status=completed`, dispara `phase.<phase>.completed`. **Não** inicia a próxima fase. |
+| **`PhaseOrchestrator.AdvancePhase`** | Event subscribers (`phase.*.completed`) | **Inicia a próxima fase**: atualiza `current_phase`, reseta `status=pending`, dispara harness para a nova fase. |
+
+Este design em dois passos evita loop infinito: a tool MCP conclui a fase → evento disparado → orchestrator reage e inicia a próxima. O use case nunca chama o orchestrator diretamente, e o orchestrator nunca chama o use case.
+
+#### 6.3.6 Retry Handler
+
+```go
+func (o *PhaseOrchestrator) HandleRetry(ctx context.Context, taskID string, phase entity.Phase, attempt int, maxRetries int) {
+    if attempt > maxRetries {
+        task, _ := o.taskRepo.Find(ctx, taskID)
+        task.Status = entity.StatusFailed
+        task.UpdatedAt = time.Now()
+        _ = o.taskRepo.Update(ctx, task)
+        o.dispatcher.Publish(event.Event{
+            Type: event.PhaseEvent(phase, "failed"), TaskID: taskID,
+            Payload: map[string]any{"phase": phase, "attempt": attempt},
+        })
+        return
+    }
+    time.Sleep(time.Duration(2*attempt) * time.Second)
+    o.dispatcher.Publish(event.Event{
+        Type: event.PhaseEvent(phase, "retry"), TaskID: taskID,
+        Payload: map[string]any{"phase": phase, "attempt": attempt},
+    })
+    task, _ := o.taskRepo.Find(ctx, taskID)
+    _ = o.dispatchPhase(ctx, task, phase)
+}
+```
+
 ---
 
 ## 7. Estrutura de Diretórios
@@ -301,9 +462,10 @@ kanbanai/
 │   │   ├── entity/
 │   │   │   ├── task.go                      # Entidade Task
 │   │   │   ├── task_phase.go                # Enum de fases
-│   │   │   ├── task_status.go               # Enum de status
+│   │   │   ├── task_status.go               # Enum de status (pending, in_progress, completed, failed, cancelled)
 │   │   │   ├── task_event_log.go            # Entidade de log de eventos
-│   │   │   └── phase_config.go              # Config de modelo por raia
+│   │   │   ├── phase_config.go              # Config de modelo por raia
+│   │   │   └── phase_output.go              # Entidade PhaseOutput (NOVO)
 │   │   │
 │   │   ├── event/
 │   │   │   ├── types.go                     # Definição dos EventTypes
@@ -312,8 +474,9 @@ kanbanai/
 │   │   │   └── handler.go                   # Type Handler
 │   │   │
 │   │   ├── repository/
-│   │   │   ├── task_repository.go           # Interface TaskRepository
-│   │   │   └── task_event_log_repository.go # Interface TaskEventLogRepository
+│   │   │   ├── task_repository.go           # Interface TaskRepository (com TaskFilters)
+│   │   │   ├── task_event_log_repository.go # Interface TaskEventLogRepository
+│   │   │   └── phase_output_repository.go   # Interface PhaseOutputRepository (NOVO)
 │   │   │
 │   │   ├── query/
 │   │   │   ├── task_with_phases_query.go    # Interface — join task + phases
@@ -354,6 +517,9 @@ kanbanai/
 │   │       └── prompt_builder_test.go
 │   │
 │   └── adapter/
+│       ├── bootstrap/
+│       │   └── bootstrap.go                 # Setup do DI e registro de event subscribers (NOVO)
+│       │
 │       ├── in/
 │       │   ├── http/
 │       │   │   ├── server.go                # Setup do Gin + middleware
@@ -400,7 +566,9 @@ kanbanai/
 │           │   │   ├── task_repository_sqlite.go       # Impl TaskRepository
 │           │   │   ├── task_repository_sqlite_test.go
 │           │   │   ├── task_event_log_repository_sqlite.go
-│           │   │   └── task_event_log_repository_sqlite_test.go
+│           │   │   ├── task_event_log_repository_sqlite_test.go
+│           │   │   ├── phase_output_repository_sqlite.go  # Impl PhaseOutputRepository (NOVO)
+│           │   │   └── phase_output_repository_sqlite_test.go
 │           │   │
 │           │   └── query/
 │           │       ├── task_with_phases_query_sqlite.go  # Impl join query
@@ -488,6 +656,7 @@ type Task struct {
     CurrentPhase Phase
     Status       Status
     Priority     int
+    Version      int       // Optimistic locking version
     CreatedAt    time.Time
     UpdatedAt    time.Time
 }
@@ -522,6 +691,27 @@ func (p Phase) Next() (Phase, bool)
 func (p Phase) IsTerminal() bool
 ```
 
+### 8.2.1 Status (Enum de Status da Task)
+
+```go
+// internal/domain/entity/task_status.go
+type Status string
+
+const (
+    StatusPending    Status = "pending"     // Aguardando início do processamento da fase
+    StatusInProgress Status = "in_progress" // Harness executando a fase ativamente
+    StatusCompleted  Status = "completed"  // Fase concluída (aguardando transição ou final)
+    StatusFailed     Status = "failed"     // Falha terminal após esgotar retries
+    StatusCancelled  Status = "cancelled"  // Cancelado manualmente pelo usuário
+)
+
+// Transições válidas de Status:
+// - StatusPending    -> StatusInProgress, StatusCancelled
+// - StatusInProgress -> StatusCompleted, StatusFailed, StatusCancelled
+// - StatusCompleted  -> StatusPending (ao ir para a próxima fase) ou status terminal
+// - StatusFailed e StatusCancelled são terminais (só saem via intervenção manual)
+```
+
 ### 8.3 TaskEventLog
 
 ```go
@@ -545,8 +735,23 @@ type PhaseConfig struct {
     Phase       Phase
     ModelName   string    // ex: "claude-sonnet-4-20250514"
     HarnessCmd  string    // ex: "claude"
-    MaxRetries  int
-    TimeoutSec  int
+    MaxRetries  int       // Quantidade máxima de tentativas automáticas em caso de erro
+    TimeoutSec  int       // Limite de execução por tentativa do harness
+}
+```
+
+### 8.5 PhaseOutput (Entidade de Output da Fase)
+
+```go
+// internal/domain/entity/phase_output.go
+type PhaseOutput struct {
+    ID        string
+    TaskID    string
+    Phase     Phase
+    Output    string    // Conteúdo bruto gerado (markdown, código, JSON, etc)
+    Summary   string    // Resumo legível da entrega
+    CreatedAt time.Time
+    UpdatedAt time.Time
 }
 ```
 
@@ -556,7 +761,31 @@ type PhaseConfig struct {
 
 ### 9.1 Repositories (Porta de Saída)
 
-Todos os repositories seguem o contrato padrão:
+Todos os repositories seguem o contrato padrão com assinaturas estritas para CRUD básico e buscas dinâmicas:
+
+```go
+// internal/domain/repository/criteria.go
+type Operator string
+
+const (
+    OpEquals              Operator = "="
+    OpNotEquals           Operator = "!="
+    OpGreaterThan         Operator = ">"
+    OpLessThan            Operator = "<"
+    OpGreaterThanOrEquals Operator = ">="
+    OpLessThanOrEquals    Operator = "<="
+    OpLike                Operator = "LIKE"
+    OpIn                  Operator = "IN"
+)
+
+type Criterion struct {
+    Key      string
+    Value    any
+    Operator Operator
+}
+
+type Criteria []Criterion
+```
 
 ```go
 // internal/domain/repository/task_repository.go
@@ -565,15 +794,29 @@ type TaskRepository interface {
     Update(ctx context.Context, task *entity.Task) error
     Delete(ctx context.Context, id string) error
     Find(ctx context.Context, id string) (*entity.Task, error)
-    FindByFilters(ctx context.Context, filters TaskFilters) ([]*entity.Task, error)
+    FindByFilters(ctx context.Context, criteria Criteria) ([]*entity.Task, error)
 }
+```
 
-type TaskFilters struct {
-    Phase    *entity.Phase
-    Status   *entity.Status
-    Priority *int
-    Limit    int
-    Offset   int
+```go
+// internal/domain/repository/task_event_log_repository.go
+type TaskEventLogRepository interface {
+    Create(ctx context.Context, log *entity.TaskEventLog) error
+    Update(ctx context.Context, log *entity.TaskEventLog) error
+    Delete(ctx context.Context, id string) error
+    Find(ctx context.Context, id string) (*entity.TaskEventLog, error)
+    FindByFilters(ctx context.Context, criteria Criteria) ([]*entity.TaskEventLog, error)
+}
+```
+
+```go
+// internal/domain/repository/phase_output_repository.go
+type PhaseOutputRepository interface {
+    Create(ctx context.Context, output *entity.PhaseOutput) error
+    Update(ctx context.Context, output *entity.PhaseOutput) error
+    Delete(ctx context.Context, id string) error
+    Find(ctx context.Context, id string) (*entity.PhaseOutput, error)
+    FindByFilters(ctx context.Context, criteria Criteria) ([]*entity.PhaseOutput, error)
 }
 ```
 
@@ -585,12 +828,12 @@ Queries com joins ficam em interfaces separadas:
 // internal/domain/query/task_with_phases_query.go
 type TaskWithPhasesResult struct {
     Task         entity.Task
-    PhaseOutputs []PhaseOutput
+    PhaseOutputs []entity.PhaseOutput
 }
 
 type TaskWithPhasesQuery interface {
     Get(ctx context.Context, taskID string) (*TaskWithPhasesResult, error)
-    List(ctx context.Context, filters TaskFilters) ([]*TaskWithPhasesResult, error)
+    List(ctx context.Context, criteria repository.Criteria) ([]*TaskWithPhasesResult, error)
 }
 ```
 
@@ -665,8 +908,9 @@ func (uc *CreateTask) Execute(ctx context.Context, input dto.CreateTaskInput) (*
 | `DeleteTask`            | `delete_task.go`             | Remover task                               |
 | `GetTask`               | `get_task.go`                | Buscar task por ID                         |
 | `ListTasks`             | `list_tasks.go`              | Listar tasks com filtros                   |
-| `AdvancePhase`          | `advance_phase.go`           | Transicionar task para próxima fase        |
+| `AdvancePhase`          | `advance_phase.go`           | Concluir fase atual (persiste PhaseOutput, dispara phase.*.completed). Não inicia a próxima fase — isso é feito pelo PhaseOrchestrator como subscriber do evento. |
 | `ReportPhaseProgress`   | `report_phase_progress.go`   | Registrar progresso de uma fase            |
+| `SavePhaseOutput`       | `save_phase_output.go`       | Salvar artefatos/outputs de uma fase       |
 
 ---
 
@@ -702,7 +946,7 @@ Cada tool é definida em seu próprio arquivo:
 func completePhaseTool(container *di.Container) mcp.Tool {
     return mcp.Tool{
         Name:        "complete_phase",
-        Description: "Marks the current phase as completed and triggers the next phase",
+        Description: "Marks the current phase as completed. The next phase is started automatically by the orchestrator.",
         InputSchema: mcp.Schema{
             Type: "object",
             Properties: map[string]mcp.Property{
@@ -713,8 +957,55 @@ func completePhaseTool(container *di.Container) mcp.Tool {
             Required: []string{"task_id", "phase", "summary"},
         },
         Handler: func(ctx context.Context, args map[string]any) (any, error) {
-            advancePhase := container.MustResolve("advancePhase").(*usecase.AdvancePhase)
+            advancePhase := container.MustResolve("advancePhaseUseCase").(*usecase.AdvancePhase)
             return advancePhase.Execute(ctx, args["task_id"].(string))
+        },
+    }
+}
+
+// internal/adapter/in/mcp/tool_update_output.go
+func updateTaskOutputTool(container *di.Container) mcp.Tool {
+    return mcp.Tool{
+        Name:        "update_task_output",
+        Description: "Saves artifacts/outputs for the current phase (plan, code, test results, etc.)",
+        InputSchema: mcp.Schema{
+            Type: "object",
+            Properties: map[string]mcp.Property{
+                "task_id": {Type: "string", Description: "ID of the task"},
+                "phase":   {Type: "string", Description: "Current phase"},
+                "output":  {Type: "string", Description: "Raw output content (markdown, code, JSON, etc.)"},
+                "summary": {Type: "string", Description: "Human-readable summary of the output"},
+            },
+            Required: []string{"task_id", "phase", "output"},
+        },
+        Handler: func(ctx context.Context, args map[string]any) (any, error) {
+            savePhaseOutput := container.MustResolve("savePhaseOutputUseCase").(*usecase.SavePhaseOutput)
+            input := dto.SavePhaseOutputInput{
+                TaskID:  args["task_id"].(string),
+                Phase:   entity.Phase(args["phase"].(string)),
+                Output:  args["output"].(string),
+                Summary: args["summary"].(string),
+            }
+            return savePhaseOutput.Execute(ctx, input)
+        },
+    }
+}
+
+// internal/adapter/in/mcp/tool_get_task.go
+func getTaskTool(container *di.Container) mcp.Tool {
+    return mcp.Tool{
+        Name:        "get_task",
+        Description: "Retrieves the current task information including phase outputs",
+        InputSchema: mcp.Schema{
+            Type: "object",
+            Properties: map[string]mcp.Property{
+                "task_id": {Type: "string", Description: "ID of the task to retrieve"},
+            },
+            Required: []string{"task_id"},
+        },
+        Handler: func(ctx context.Context, args map[string]any) (any, error) {
+            getTask := container.MustResolve("getTaskUseCase").(*usecase.GetTask)
+            return getTask.Execute(ctx, args["task_id"].(string))
         },
     }
 }
@@ -734,11 +1025,45 @@ type Broker struct {
     dispatcher  event.Dispatcher
 }
 
-func NewBroker(dispatcher event.Dispatcher) *Broker
+func NewBroker(dispatcher event.Dispatcher) *Broker {
+    b := &Broker{
+        clients:    make(map[string]chan event.Event),
+        dispatcher: dispatcher,
+    }
+    // Subscribe to ALL events via wildcard and forward to connected clients
+    dispatcher.SubscribeAll(b.onEvent)
+    return b
+}
 
-func (b *Broker) Broadcast(evt event.Event)
-func (b *Broker) Subscribe(clientID string) <-chan event.Event
-func (b *Broker) Unsubscribe(clientID string)
+// onEvent is the wildcard handler that forwards every event to all connected clients
+func (b *Broker) onEvent(evt event.Event) {
+    b.mu.RLock()
+    defer b.mu.RUnlock()
+    for _, ch := range b.clients {
+        select {
+        case ch <- evt:
+        default:
+            // Client buffer full — drop event to avoid blocking the publisher
+        }
+    }
+}
+
+func (b *Broker) Subscribe(clientID string) <-chan event.Event {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    ch := make(chan event.Event, 64) // Buffered to avoid slow-client head-of-line blocking
+    b.clients[clientID] = ch
+    return ch
+}
+
+func (b *Broker) Unsubscribe(clientID string) {
+    b.mu.Lock()
+    defer b.mu.Unlock()
+    if ch, ok := b.clients[clientID]; ok {
+        close(ch)
+        delete(b.clients, clientID)
+    }
+}
 ```
 
 ### 12.2 Handler HTTP
@@ -766,14 +1091,65 @@ func (h *SSEHandler) Stream(c *gin.Context) {
 
 ## 13. Harness Adapter
 
-### 13.1 Dispatch de Comando
+### 13.1 Protocolo de Transporte MCP e Descoberta
+
+O harness conecta-se ao servidor MCP utilizando um dos dois transportes suportados, configuráveis por variável de ambiente:
+
+1. **Stdio Transport (Padrão para CLI local)**: O `HarnessAdapter` spawna o executável do harness como processo filho. O harness e o KanbanAI se comunicam diretamente via `stdin` e `stdout` redirecionados do processo filho.
+2. **SSE Transport (HTTP)**: O servidor MCP abre uma porta HTTP dedicada (`KANBANAI_MCP_PORT=8081`). O `HarnessAdapter` injeta a URL do endpoint SSE (`http://localhost:8081/mcp/sse`) nas variáveis de ambiente do processo filho (`KANBANAI_MCP_URL`). O harness realiza a descoberta se conectando a essa URL.
+
+Para garantir que o harness saiba como se conectar estruturadamente, o `CommandBuilder` escreve um arquivo de configuração temporário no formato padrão do MCP (ex: `mcp_config.json`) na pasta de execução do harness ou injeta variáveis de ambiente:
+
+```json
+{
+  "mcpServers": {
+    "kanbanai-mcp": {
+      "command": "kanbanai",
+      "args": ["mcp"],
+      "env": {
+        "KANBANAI_SERVER_URL": "http://localhost:8080"
+      }
+    }
+  }
+}
+```
+
+### 13.2 Fluxo de Execução com Retries e Timeout
+
+Se o harness falhar em responder dentro do limite definido por `TimeoutSec`, ou retornar um código de erro diferente de zero, o `PhaseOrchestrator` intercepta o erro através do monitoramento do processo e inicia a política de **Retry**:
+
+1. **Backoff Linear**: Um intervalo de espera curto (`2 * tentativa` segundos) é observado antes de re-despachar o comando.
+2. **Controle de Tentativas**: O orchestrator incrementa a contagem de tentativas da fase. Se `tentativas > MaxRetries`, o status da task é alterado para `StatusFailed` e o evento `phase.<phase>.failed` é publicado.
+3. **Eventos de Retry**: Cada falha transitória dispara um evento `phase.<phase>.retry` para atualizar o frontend via SSE.
+
+### 13.3 Implementação do Adapter
 
 ```go
 // internal/adapter/out/harness/adapter.go
 type Adapter struct {
-    configs    map[entity.Phase]entity.PhaseConfig
-    builder    *CommandBuilder
-    dispatcher event.Dispatcher
+    configs         map[entity.Phase]entity.PhaseConfig
+    builder         *CommandBuilder
+    dispatcher      event.Dispatcher
+    processRegistry map[string]*exec.Cmd  // taskID → running harness process
+    mu              sync.RWMutex
+}
+
+func (a *Adapter) RegisterProcess(taskID string, cmd *exec.Cmd) {
+    a.mu.Lock()
+    a.processRegistry[taskID] = cmd
+    a.mu.Unlock()
+}
+
+func (a *Adapter) UnregisterProcess(taskID string) {
+    a.mu.Lock()
+    delete(a.processRegistry, taskID)
+    a.mu.Unlock()
+}
+
+func (a *Adapter) GetProcess(taskID string) *exec.Cmd {
+    a.mu.RLock()
+    defer a.mu.RUnlock()
+    return a.processRegistry[taskID]
 }
 
 func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.Phase, prompt string) error {
@@ -785,20 +1161,45 @@ func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.
         Payload: map[string]any{"phase": phase, "model": config.ModelName},
     })
 
-    cmd := a.builder.Build(config, prompt)
-    return cmd.Start() // executa em background
+    cmd, err := a.builder.Build(ctx, config, task.ID, prompt)
+    if err != nil {
+        return fmt.Errorf("failed to build command: %w", err)
+    }
+
+    // Executa de forma assíncrona, mas monitora em uma goroutine
+    if err := cmd.Start(); err != nil {
+        return fmt.Errorf("failed to start harness: %w", err)
+    }
+
+    a.RegisterProcess(task.ID, cmd)
+    go a.monitorProcess(cmd, task.ID, phase, config)
+    return nil
+}
+
+func (a *Adapter) monitorProcess(cmd *exec.Cmd, taskID string, phase entity.Phase, config entity.PhaseConfig) {
+    defer a.UnregisterProcess(taskID)
+    // Monitora processo e gerencia timeouts usando cmd.Wait() ou context.Done()
+    // Caso ocorra falha, dispara a lógica de retry controlada pelo orchestrator
 }
 ```
 
-### 13.2 Command Builder
+### 13.4 Command Builder
 
 ```go
 // internal/adapter/out/harness/command_builder.go
-type CommandBuilder struct{}
+type CommandBuilder struct {
+    mcpPort string
+}
 
-func (b *CommandBuilder) Build(config entity.PhaseConfig, prompt string) *exec.Cmd {
-    // Ex: claude --model claude-sonnet-4-20250514 --prompt "..."
-    return exec.Command(config.HarnessCmd, "--model", config.ModelName, "--prompt", prompt)
+func (b *CommandBuilder) Build(ctx context.Context, config entity.PhaseConfig, taskID string, prompt string) (*exec.Cmd, error) {
+    // Monta o comando injetando KANBANAI_TASK_ID e KANBANAI_MCP_PORT no environment do processo
+    cmd := exec.CommandContext(ctx, config.HarnessCmd, "--model", config.ModelName, "--prompt", prompt)
+    cmd.Env = append(os.Environ(), 
+        fmt.Sprintf("KANBANAI_TASK_ID=%s", taskID),
+        fmt.Sprintf("KANBANAI_MCP_PORT=%s", b.mcpPort),
+        fmt.Sprintf("KANBANAI_MCP_URL=http://localhost:%s/mcp/sse", b.mcpPort),
+    )
+    return cmd, nil
 }
 ```
 
@@ -837,6 +1238,20 @@ KANBANAI_HARNESS_VALIDATING_MODEL=claude-sonnet-4-20250514
 KANBANAI_HARNESS_TESTING_CMD=claude
 KANBANAI_HARNESS_TESTING_MODEL=claude-sonnet-4-20250514
 
+# Retry e Timeout (global, sobrescrito por raia)
+KANBANAI_HARNESS_MAX_RETRIES=3
+KANBANAI_HARNESS_TIMEOUT_SEC=600
+KANBANAI_HARNESS_PLANNING_MAX_RETRIES=3
+KANBANAI_HARNESS_PLANNING_TIMEOUT_SEC=600
+KANBANAI_HARNESS_TODO_MAX_RETRIES=3
+KANBANAI_HARNESS_TODO_TIMEOUT_SEC=600
+KANBANAI_HARNESS_DOING_MAX_RETRIES=3
+KANBANAI_HARNESS_DOING_TIMEOUT_SEC=900
+KANBANAI_HARNESS_VALIDATING_MAX_RETRIES=3
+KANBANAI_HARNESS_VALIDATING_TIMEOUT_SEC=600
+KANBANAI_HARNESS_TESTING_MAX_RETRIES=3
+KANBANAI_HARNESS_TESTING_TIMEOUT_SEC=900
+
 # Frontend
 KANBANAI_FRONTEND_URL=http://localhost:3000
 
@@ -853,18 +1268,31 @@ type Config struct {
     DB      DBConfig
     MCP     MCPConfig
     Harness HarnessConfig
+    Web     WebConfig
     Log     LogConfig
 }
 
+type MCPConfig struct {
+    Port int // Porta do servidor MCP (default: 8081)
+}
+
+type WebConfig struct {
+    Dir string // Diretório dos arquivos estáticos do frontend (default: ./web)
+}
+
 type HarnessConfig struct {
-    DefaultCmd   string
-    DefaultModel string
-    Phases       map[entity.Phase]PhaseHarnessConfig
+    DefaultCmd        string
+    DefaultModel      string
+    DefaultMaxRetries int
+    DefaultTimeoutSec int
+    Phases            map[entity.Phase]PhaseHarnessConfig
 }
 
 type PhaseHarnessConfig struct {
-    Cmd   string
-    Model string
+    Cmd        string
+    Model      string
+    MaxRetries int // Sobrescreve DefaultMaxRetries
+    TimeoutSec int // Sobrescreve DefaultTimeoutSec
 }
 ```
 
@@ -896,47 +1324,162 @@ var migrateCmd = &cobra.Command{
 
 ---
 
-## 16. API REST
+## 16. API REST & SSE (End-to-End API Spec)
 
-### 16.1 Endpoints
+A API REST do KanbanAI utiliza o prefixo `/api/v1/` e retorna payloads estruturados em JSON. Todos os payloads de sucesso e erro seguem um padrão fixo que o cliente consome utilizando um interceptor HTTP (como Axios/Fetch).
 
-| Método   | Rota                        | Handler                | Descrição                    |
-|----------|-----------------------------|------------------------|------------------------------|
-| `GET`    | `/api/health`               | `HealthHandler`        | Health check                 |
-| `POST`   | `/api/tasks`                | `TaskHandler.Create`   | Criar nova task              |
-| `GET`    | `/api/tasks`                | `TaskHandler.List`     | Listar tasks (com filtros)   |
-| `GET`    | `/api/tasks/:id`            | `TaskHandler.Get`      | Buscar task por ID           |
-| `PUT`    | `/api/tasks/:id`            | `TaskHandler.Update`   | Atualizar task               |
-| `DELETE` | `/api/tasks/:id`            | `TaskHandler.Delete`   | Deletar task                 |
-| `GET`    | `/api/tasks/:id/timeline`   | `TaskHandler.Timeline` | Timeline de eventos da task  |
-| `GET`    | `/api/events`               | `SSEHandler.Stream`    | Stream SSE de eventos        |
+### 16.1 Tabela de Endpoints Completos
 
-### 16.2 Formato de Response
+| Método   | Rota | Parâmetros de Query / Body | HTTP Status | Descrição |
+|----------|------|----------------------------|-------------|-----------|
+| `GET`    | `/api/v1/health` | - | `200 OK` | Verificação de integridade da API e conexão do SQLite. |
+| `POST`   | `/api/v1/tasks` | **Body**: `{ "title": "string", "description": "string", "priority": int }` | `201 Created` | Registra intenção do usuário, persiste no banco e inicia fluxo Kanban reativo. |
+| `GET`    | `/api/v1/tasks` | **Query**: `?phase=string&status=string&limit=10&offset=0` | `200 OK` | Busca tasks com paginação e filtros (mapeados para `Criteria`). |
+| `GET`    | `/api/v1/tasks/:id` | **Path**: `id` (ULID) | `200 OK` | Retorna os detalhes de uma task, incluindo os outputs de cada fase já completada. |
+| `PUT`    | `/api/v1/tasks/:id` | **Path**: `id`, **Body**: `{ "title": "string", "description": "string", "priority": int, "version": int }` | `200 OK` | Atualização manual de dados pelo usuário (requer correspondência de `version` contra race conditions). |
+| `DELETE` | `/api/v1/tasks/:id` | **Path**: `id` | `204 No Content` | Remove a task do banco de dados e sinaliza cancelamento imediato (`SIGKILL`) de harnesses ativos desta task. |
+| `GET`    | `/api/v1/tasks/:id/timeline` | **Path**: `id` | `200 OK` | Busca o histórico detalhado de eventos e logs (timeline) associado àquela task específica. |
+| `POST`   | `/api/v1/tasks/:id/retry` | **Path**: `id` | `200 OK` | Reinicia manualmente o fluxo de execução para a fase atual travada em estado `failed`. |
+| `GET`    | `/api/v1/events` | - | `200 OK` (Stream) | Endpoint SSE. Abre stream persistente e unidirecional para feeds em tempo real do frontend. |
 
-```json
-// Sucesso
-{
+---
+
+### 16.2 Estrutura Detalhada dos payloads (JSON)
+
+#### 1. POST `/api/v1/tasks` (Criar Task)
+- **Request Body**:
+  ```json
+  {
+    "title": "Configurar SQLite local",
+    "description": "Criar migrations e conexao thread-safe",
+    "priority": 2
+  }
+  ```
+- **Response (`201 Created`)**:
+  ```json
+  {
     "success": true,
-    "data": { "..." : "..." },
-    "meta": {
-        "request_id": "01J...",
-        "timestamp": "2026-06-23T20:00:00Z"
-    }
-}
-
-// Erro
-{
-    "success": false,
-    "error": {
-        "code": "TASK_NOT_FOUND",
-        "message": "Task with ID '...' not found"
+    "data": {
+      "id": "01J185V1WXP8B4K67R2C8V7Y8E",
+      "title": "Configurar SQLite local",
+      "description": "Criar migrations e conexao thread-safe",
+      "current_phase": "planning",
+      "status": "pending",
+      "priority": 2,
+      "version": 1,
+      "created_at": "2026-06-23T21:02:40Z",
+      "updated_at": "2026-06-23T21:02:40Z"
     },
     "meta": {
-        "request_id": "01J...",
-        "timestamp": "2026-06-23T20:00:00Z"
+      "request_id": "req-01J185V1Z",
+      "timestamp": "2026-06-23T21:02:40Z"
     }
+  }
+  ```
+
+#### 2. GET `/api/v1/tasks/:id` (Buscar Task com Outputs)
+- **Response (`200 OK`)**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "task": {
+        "id": "01J185V1WXP8B4K67R2C8V7Y8E",
+        "title": "Configurar SQLite local",
+        "description": "Criar migrations e conexao thread-safe",
+        "current_phase": "todo",
+        "status": "pending",
+        "priority": 2,
+        "version": 2,
+        "created_at": "2026-06-23T21:02:40Z",
+        "updated_at": "2026-06-23T21:05:12Z"
+      },
+      "phase_outputs": [
+        {
+          "id": "01J185Y7ZXP8B4K67R2C8V7Y01",
+          "task_id": "01J185V1WXP8B4K67R2C8V7Y8E",
+          "phase": "planning",
+          "output": "# Plano de Execucao\n- Mapear tabelas...\n- Criar conexao...",
+          "summary": "Plano de arquitetura e criterios de aceite definidos.",
+          "created_at": "2026-06-23T21:05:12Z",
+          "updated_at": "2026-06-23T21:05:12Z"
+        }
+      ]
+    },
+    "meta": {
+      "request_id": "req-01J185Z2X",
+      "timestamp": "2026-06-23T21:06:00Z"
+    }
+  }
+  ```
+
+#### 3. Erro Padronizado (ex: Conflito de Concorrência - `409 Conflict`)
+- **Response (`409 Conflict`)**:
+  ```json
+  {
+    "success": false,
+    "error": {
+      "code": "CONCURRENT_MODIFICATION",
+      "message": "The task version has changed. Please reload the data and try again."
+    },
+    "meta": {
+      "request_id": "req-01J185Z99",
+      "timestamp": "2026-06-23T21:06:05Z"
+    }
+  }
+  ```
+
+---
+
+### 16.3 Mecanismo SSE e Integração com o Frontend (React)
+
+O endpoint `/api/v1/events` mantém uma conexão HTTP persistente aberta (`Connection: keep-alive`, `Content-Type: text/event-stream`).
+
+#### Formato dos Eventos Enviados pelo Go:
+O servidor transmite payloads estruturados de acordo com o evento ocorrido. Exemplo de evento de alteração de raia:
+```eventstream
+event: task.status_changed
+data: {"task_id":"01J185V1WXP8B4K67R2C8V7Y8E","title":"Configurar SQLite local","current_phase":"doing","status":"in_progress","version":3}
+```
+
+Exemplo de progresso reportado por um agente:
+```eventstream
+event: phase.doing.progress
+data: {"task_id":"01J185V1WXP8B4K67R2C8V7Y8E","phase":"doing","message":"Escrevendo arquivo sqlite_connection.go","progress_percentage":45}
+```
+
+#### Como o Frontend consome estes endpoints (React + MUI):
+1. **Carregamento Inicial**: Na montagem da página `Dashboard.tsx`, o hook `useTasks.ts` executa um `GET /api/v1/tasks` e popula a renderização das 6 raias do `KanbanBoard`.
+2. **Conexão Real-Time**: O hook `useSSE.ts` inicia a conexão com `new EventSource('/api/v1/events')`.
+3. **Mutações Reativas**:
+   - Ao receber o evento `task.status_changed`, o Contexto React (`TaskContext`) atualiza o estado local movendo o card da task correspondente para a nova coluna (`current_phase`) e aplicando a estilização do status correspondente (`pending`, `in_progress`, `failed`, `completed`).
+   - Ao receber `phase.*.progress`, o card correspondente exibe dinamicamente uma barra de progresso linear e um log de atividades em miniatura do agente atrelado.
+   - Ao receber `task.created` ou `task.deleted`, o card é inserido ou removido instantaneamente da tela de forma reativa.
+   - Em caso de desconexão (ex: queda de rede), o EventSource reconecta automaticamente e atualiza o estado chamando uma nova listagem silenciosa (`GET /api/v1/tasks`).
+
+---
+
+### 16.4 Servindo o Frontend Estático
+
+O servidor Go serve os arquivos estáticos do frontend (build do React) na rota raiz `/`:
+
+```go
+// internal/adapter/in/http/router.go
+func SetupRoutes(r *gin.Engine, container *di.Container, webDir string) {
+    // API v1
+    api := r.Group("/api/v1")
+    // ... rotas da API ...
+
+    // Servir frontend estático (React build)
+    r.Static("/assets", filepath.Join(webDir, "assets"))
+    r.StaticFile("/", filepath.Join(webDir, "index.html"))
+    r.NoRoute(func(c *gin.Context) {
+        c.File(filepath.Join(webDir, "index.html")) // SPA fallback
+    })
 }
 ```
+
+O diretório `webDir` é configurável via `KANBANAI_WEB_DIR` (default: `./web`).
 
 ---
 
@@ -1047,6 +1590,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     current_phase TEXT NOT NULL DEFAULT 'planning',
     status        TEXT NOT NULL DEFAULT 'pending',
     priority      INTEGER NOT NULL DEFAULT 0,
+    version       INTEGER NOT NULL DEFAULT 1, -- Para controle de concorrência via optimistic locking
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -1203,3 +1747,293 @@ User        Frontend       HTTP         UseCase      Repository    Dispatcher   
 | Modelo por raia configurável          | Flexibilidade para usar modelos especializados por fase             |
 | MCP para comunicação harness→server   | Protocolo padrão para comunicação com LLMs                          |
 | Cobra + Viper                         | Stack padrão Go para CLI + config                                   |
+
+---
+
+## 25. Bootstrap e Fiação de Dependências
+
+O arquivo `internal/adapter/bootstrap/bootstrap.go` é responsável por inicializar todas as dependências do sistema e registrar os observadores (listeners de eventos), garantindo o fluxo reativo sem acoplamento direto:
+
+```go
+package bootstrap
+
+import (
+    "context"
+    "database/sql"
+    "log/slog"
+    "os"
+    "time"
+
+    "kanbanai/config"
+    "kanbanai/internal/di"
+    "kanbanai/internal/domain/event"
+    "kanbanai/internal/adapter/out/event"
+    "kanbanai/internal/adapter/out/persistence/sqlite"
+    "kanbanai/internal/adapter/out/persistence/repository"
+    "kanbanai/internal/adapter/out/persistence/query"
+    "kanbanai/internal/adapter/out/harness"
+    "kanbanai/internal/adapter/out/sse"
+    "kanbanai/internal/application/usecase"
+    "kanbanai/internal/application/service"
+)
+
+func Initialize(cfg *config.Config) (*di.Container, error) {
+    container := di.NewContainer()
+    
+    // 1. Inicializar Logger (slog)
+    var handler slog.Handler
+    if cfg.Log.Level == "debug" {
+        handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+    } else {
+        handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+    }
+    logger := slog.New(handler)
+    slog.SetDefault(logger)
+    container.Register("logger", logger)
+
+    // 2. Conectar ao SQLite
+    db, err := sqlite.NewConnection(cfg.DB.Path)
+    if err != nil {
+        return nil, err
+    }
+    container.Register("db", db)
+
+    // 3. Registrar Repositories e Queries
+    taskRepo := repository.NewTaskRepositorySQLite(db)
+    eventLogRepo := repository.NewTaskEventLogRepositorySQLite(db)
+    phaseOutputRepo := repository.NewPhaseOutputRepositorySQLite(db)
+    
+    container.Register("taskRepo", taskRepo)
+    container.Register("eventLogRepo", eventLogRepo)
+    container.Register("phaseOutputRepo", phaseOutputRepo)
+
+    taskWithPhasesQuery := query.NewTaskWithPhasesQuerySQLite(db)
+    taskTimelineQuery := query.NewTaskTimelineQuerySQLite(db)
+    container.Register("taskWithPhasesQuery", taskWithPhasesQuery)
+    container.Register("taskTimelineQuery", taskTimelineQuery)
+
+    // 4. Registrar Dispatcher de Eventos e SSE Broker
+    dispatcher := eventimpl.NewDispatcherMemory()
+    container.Register("dispatcher", dispatcher)
+
+    sseBroker := sse.NewBroker(dispatcher) // Broker se inscreve via SubscribeAll internamente
+    container.Register("sseBroker", sseBroker)
+
+    // 5. Registrar Harness Adapter e Prompt Builder
+    promptBuilder := service.NewPromptBuilder()
+    container.Register("promptBuilder", promptBuilder)
+
+    harnessAdapter := harness.NewAdapter(cfg.Harness.Phases, cfg.MCP.Port, dispatcher)
+    container.Register("harnessAdapter", harnessAdapter)
+
+    // 6. Registrar Use Cases
+    createTaskUC := usecase.NewCreateTask(taskRepo, dispatcher)
+    updateTaskUC := usecase.NewUpdateTask(taskRepo, dispatcher)
+    deleteTaskUC := usecase.NewDeleteTask(taskRepo, dispatcher)
+    getTaskUC := usecase.NewGetTask(taskRepo, taskWithPhasesQuery)
+    listTasksUC := usecase.NewListTasks(taskRepo)
+    advancePhaseUC := usecase.NewAdvancePhase(taskRepo, phaseOutputRepo, dispatcher)
+    reportProgressUC := usecase.NewReportPhaseProgress(eventLogRepo, dispatcher)
+    savePhaseOutputUC := usecase.NewSavePhaseOutput(phaseOutputRepo, dispatcher)
+    
+    container.Register("createTaskUseCase", createTaskUC)
+    container.Register("updateTaskUseCase", updateTaskUC)
+    container.Register("deleteTaskUseCase", deleteTaskUC)
+    container.Register("getTaskUseCase", getTaskUC)
+    container.Register("listTasksUseCase", listTasksUC)
+    container.Register("advancePhaseUseCase", advancePhaseUC)
+    container.Register("reportProgressUseCase", reportProgressUC)
+    container.Register("savePhaseOutputUseCase", savePhaseOutputUC)
+
+    // 7. Inicializar o PhaseOrchestrator e Registrar Assinaturas do Dispatcher
+    orchestrator := service.NewPhaseOrchestrator(
+        taskRepo, 
+        phaseOutputRepo, 
+        harnessAdapter, 
+        promptBuilder, 
+        dispatcher,
+    )
+    container.Register("orchestrator", orchestrator)
+
+    // Fiação reativa via Observer Pattern
+    // Quando task.created ocorre -> Inicia fluxo do Kanban
+    dispatcher.Subscribe(event.TaskCreated, func(evt event.Event) {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        task, err := taskRepo.Find(ctx, evt.TaskID)
+        if err != nil {
+            logger.Error("bootstrap: failed to find task for StartFlow", "taskID", evt.TaskID, "error", err)
+            return
+        }
+        if err := orchestrator.StartFlow(ctx, task); err != nil {
+            logger.Error("bootstrap: StartFlow failed", "taskID", evt.TaskID, "error", err)
+        }
+    })
+
+    // Quando task.deleted ocorre -> Mata processo harness ativo
+    dispatcher.Subscribe(event.TaskDeleted, func(evt event.Event) {
+        orchestrator.KillProcess(evt.TaskID)
+    })
+
+    // Quando phase.*.completed ocorre -> Avança para a próxima raia
+    dispatcher.Subscribe(event.PhasePlanningCompleted, func(evt event.Event) {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        if err := orchestrator.AdvancePhase(ctx, evt.TaskID); err != nil {
+            logger.Error("bootstrap: AdvancePhase failed", "taskID", evt.TaskID, "error", err)
+        }
+    })
+    dispatcher.Subscribe(event.PhaseTodoCompleted, func(evt event.Event) {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        if err := orchestrator.AdvancePhase(ctx, evt.TaskID); err != nil {
+            logger.Error("bootstrap: AdvancePhase failed", "taskID", evt.TaskID, "error", err)
+        }
+    })
+    dispatcher.Subscribe(event.PhaseDoingCompleted, func(evt event.Event) {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        if err := orchestrator.AdvancePhase(ctx, evt.TaskID); err != nil {
+            logger.Error("bootstrap: AdvancePhase failed", "taskID", evt.TaskID, "error", err)
+        }
+    })
+    dispatcher.Subscribe(event.PhaseValidatingCompleted, func(evt event.Event) {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        if err := orchestrator.AdvancePhase(ctx, evt.TaskID); err != nil {
+            logger.Error("bootstrap: AdvancePhase failed", "taskID", evt.TaskID, "error", err)
+        }
+    })
+    dispatcher.Subscribe(event.PhaseTestingCompleted, func(evt event.Event) {
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        if err := orchestrator.AdvancePhase(ctx, evt.TaskID); err != nil {
+            logger.Error("bootstrap: AdvancePhase failed", "taskID", evt.TaskID, "error", err)
+        }
+    })
+
+    return container, nil
+}
+```
+
+---
+
+## 26. Controle de Concorrência e Conflitos
+
+Para evitar race conditions decorrentes de múltiplas requisições simultâneas de harnesses ou usuários editando a mesma task, o sistema implementa **Locking Otimista** (Optimistic Locking):
+
+1. A tabela `tasks` possui a coluna `version INTEGER`.
+2. Toda query de atualização verifica se a versão enviada pelo use case bate com a versão do banco de dados:
+   ```sql
+   UPDATE tasks 
+   SET title = ?, description = ?, current_phase = ?, status = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+   WHERE id = ? AND version = ?;
+   ```
+3. Se a linha afetada for `0`, o repositório retorna um erro `ErrConcurrentModification`.
+4. Os Use Cases capturam este erro e efetuam retries automáticos (até 3 tentativas) recarregando a entidade, aplicando a mudança e tentando salvar novamente.
+
+---
+
+## 27. Modelos de Prompts por Fase (PromptBuilder)
+
+O `PromptBuilder` gera prompts direcionados e customizados para cada fase com diretrizes rígidas sobre o uso de ferramentas MCP:
+
+- **Planning**:
+  > Você é um arquiteto de software. Analise os requisitos da task "{{.Task.Title}}". Identifique e salve as subtasks e critérios de aceite usando `update_task_output`. Reporte o progresso com `report_progress`. Finalize executando `complete_phase`.
+- **Todo**:
+  > Você é um Product Owner / Tech Lead. Pegue o planejamento gerado na fase anterior e refine as subtasks em histórias de usuário menores e detalhadas. Atualize os outputs e finalize o refinamento.
+- **Doing**:
+  > Você é um Engenheiro de Software Sênior. Implemente a solução da task no repositório. Produza código limpo e coeso. Salve o relatório da implementação e os arquivos modificados.
+- **Validating**:
+  > Você é um Quality Assurance / Reviewer. Analise o código produzido na fase anterior. Realize análises estáticas e valide se todos os critérios de aceite foram atendidos.
+- **Testing**:
+  > Você é um Engenheiro de Testes de Software. Escreva e execute os testes automatizados unitários/integração para cobrir o código implementado na fase Doing.
+
+---
+
+## 28. Frontend State Management e Integração
+
+O frontend React é gerido por uma arquitetura leve, utilizando Vite e **React Context API** para centralização de estado:
+
+- **TaskContext**: Mantém a lista atualizada de tasks e expõe funções de alteração de estado (`createTask`, `updateTask`).
+- **useSSE**: Escuta mensagens do endpoint `/api/v1/events` e despacha mutações diretamente para o `TaskContext` de acordo com o tipo de evento (ex: `task.status_changed`, `phase.doing.progress`), atualizando os cards no board instantaneamente sem necessidade de polling.
+- **Vite Config**: O backend URL do Go é repassado dinamicamente via variáveis de ambiente da build (`VITE_API_BASE_URL`).
+
+---
+
+## 29. Graceful Shutdown
+
+O KanbanAI reage de forma graciosa a sinais de terminação do SO (`SIGINT`, `SIGTERM`):
+
+1. **Interrupção de Novos Clientes**: O servidor HTTP/API para de receber novos requests.
+2. **Drenagem de Eventos**: O SSE Broker aguarda até 5 segundos para transmitir quaisquer mensagens na fila e encerra as conexões ativas com os navegadores enviando uma terminação limpa.
+3. **Cancelamento de Processos Ativos**: O context de aplicação associado aos executáveis do harness é cancelado, terminando processos CLI em andamento.
+4. **Fechamento do DB**: A conexão com o banco SQLite é devidamente fechada.
+
+---
+
+## 30. Versionamento da API REST
+
+A API REST do backend segue o padrão de versionamento explícito `/api/v1/`:
+
+- `POST /api/v1/tasks` - Criação de task
+- `GET /api/v1/tasks` - Listagem com paginação e filtros
+- `GET /api/v1/tasks/:id/timeline` - Timeline de logs da task
+- `GET /api/v1/events` - Endpoint SSE
+
+---
+
+## 31. Dockerfile
+
+Uma especificação Docker multi-stage é utilizada para empacotar o executável do backend Go de forma eficiente:
+
+```dockerfile
+# Stage 1: Build Go Backend
+FROM golang:1.26-alpine AS backend-builder
+RUN apk add --no-cache gcc musl-dev
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o kanbanai cmd/kanbanai/main.go
+
+# Stage 2: Build Frontend
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 3: Final Image
+FROM alpine:latest
+RUN apk add --no-cache sqlite ca-certificates
+WORKDIR /app
+COPY --from=backend-builder /app/kanbanai .
+COPY --from=frontend-builder /app/frontend/dist ./web
+EXPOSE 8080 8081
+CMD ["./kanbanai", "serve"]
+```
+
+---
+
+## 32. Regras de Fluxo e Ciclo de Vida do Agente (MCP & Orquestração)
+
+Para garantir que o fluxo de execução ocorra de forma previsível e sem travamentos, são adotadas as seguintes regras de governança de ciclo de vida e estado:
+
+### 32.1 Associação e Validação de Task no Servidor MCP
+- Sempre que o `HarnessAdapter` spawna um processo filho do harness, ele obrigatoriamente injeta a variável de ambiente `KANBANAI_TASK_ID`.
+- O servidor MCP, ao receber requisições de ferramentas como `report_progress`, `update_task_output` ou `complete_phase`, valida se o parâmetro `task_id` fornecido corresponde exatamente ao `KANBANAI_TASK_ID` que o processo foi autorizado a manipular. Caso contrário, a ferramenta retorna imediatamente um erro de segurança/validação para impedir atualizações cruzadas acidentais.
+
+### 32.2 Atualização Dinâmica do Status do Kanban
+O ciclo de estados internos do Kanban durante a execução segue estritamente a máquina de estados abaixo:
+1. **Transição de Raia**: Quando a fase da task avança (ex: Planning -> Todo), a coluna `current_phase` é atualizada e o `status` da task é imediatamente setado para `pending`.
+2. **Sinal de Início**: Assim que o processo do harness correspondente é iniciado ou executa a primeira chamada MCP (seja `report_progress` ou inicialização do protocolo), o `status` da task é movido para `in_progress`.
+3. **Sucesso**: Quando a chamada `complete_phase` é executada com sucesso pelo harness, a task entra temporariamente em `status = completed`. O orquestrador reage a este evento e, no mesmo ciclo de transação segura, avança a fase da task resetando para `status = pending` na nova fase (ou finaliza em `status = completed` se a fase alcançada for `Done`).
+
+### 32.3 Monitoramento de Encerramento e Falha do Processo
+- A goroutine `monitorProcess` mapeia o ciclo de vida do comando CLI do harness.
+- Se o processo CLI do harness terminar com código de saída (exit code) diferente de zero ou estourar o tempo de execução definido por `TimeoutSec`, a goroutine intercepta este encerramento e delega a falha de volta para o orchestrator.
+- O orchestrator tenta um retry seguro seguindo o algoritmo de retry (Seção 13.2). Se as tentativas excederem `MaxRetries`, o `status` da task é definitivamente movido para `failed` e a execução do fluxo daquela task específica é bloqueada, necessitando de uma intervenção manual (ex: clique no botão "Restart Phase" no frontend) para limpar o contador de retries e reenviar o evento `started`.
+- Se a task for deletada manualmente pelo usuário enquanto o harness estiver rodando, o `PhaseOrchestrator` localiza o processo CLI associado ao `TaskID` e envia um sinal `SIGKILL` (no Windows, mata a árvore de processos correspondente) para liberar recursos e interromper o processamento imediatamente.
+
