@@ -35,48 +35,119 @@ const STATUS_LABEL: Record<string, string> = {
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
-/** A custom pipeline transit strip — the drawer's signature element.
- *  Replaces the generic MUI Stepper with station ticks + signal lamps. */
+const STATION_COUNT = PHASE_ORDER.length; // 6
+// Each station is 1/6 of the row. A gap connector between station (i-1) and i
+// spans center-to-center: left = (i - 0.5)/6, width = 1/6 (in %).
+const gapLeft = (i: number) => ((i - 0.5) / STATION_COUNT) * 100;
+const GAP_WIDTH = (1 / STATION_COUNT) * 100;
+
+/**
+ * A custom pipeline transit strip — the drawer's signature element.
+ * Replaces the generic MUI Stepper with station ticks + signal lamps.
+ *
+ * Layout: a dedicated connector layer sits BEHIND the stations (zIndex 0,
+ * pointer-events none), drawn as per-gap hairlines aligned to the node band
+ * center. Each station node is an opaque panel-colored disc on top (zIndex 1)
+ * so the line is cleanly masked under the nodes instead of cutting through
+ * them — which was producing the overlapping artifacts.
+ */
 const TransitStrip: React.FC<{ task: Task }> = ({ task }) => {
   const currentIdx = PHASE_ORDER.indexOf(task.current_phase);
   const finished = task.status === 'completed' || task.status === 'cancelled';
+  const NODE_BAND = 18; // px — node row height; connectors align to its center (9)
+
   return (
-    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0, position: 'relative' }}>
+    <Box sx={{ position: 'relative', display: 'flex', alignItems: 'flex-start' }}>
+      {/* connector layer (behind) */}
+      <Box
+        sx={{
+          position: 'absolute',
+          top: NODE_BAND / 2, // node center
+          left: 0,
+          right: 0,
+          height: 0,
+          zIndex: 0,
+          pointerEvents: 'none',
+        }}
+      >
+        {PHASE_ORDER.map((_, i) => {
+          if (i === 0) return null;
+          const passed = i <= currentIdx; // gap reaching station i is traversed
+          return (
+            <Box
+              key={`gap-${i}`}
+              sx={{
+                position: 'absolute',
+                top: -0.5,
+                left: `${gapLeft(i)}%`,
+                width: `${GAP_WIDTH}%`,
+                height: 1,
+                bgcolor: passed ? `${tokens.signal.sage}66` : tokens.border.hair,
+              }}
+            />
+          );
+        })}
+      </Box>
+
+      {/* stations (in front) */}
       {PHASE_ORDER.map((phase, i) => {
-        const lamp = tokens.phase[phase];
         const isCurrent = i === currentIdx;
         const passed = finished ? i <= currentIdx : i < currentIdx;
         const future = i > currentIdx;
         const lit = isCurrent || passed;
-        const color = lit ? (isCurrent && !finished ? tokens.signal.cyan : tokens.signal.sage) : tokens.ink.faint;
-        const phaseLampColor = passed ? tokens.signal.sage : isCurrent ? lamp : tokens.ink.faint;
+        const nodeColor =
+          isCurrent && !finished ? tokens.signal.cyan : passed ? tokens.signal.sage : tokens.ink.faint;
+        const accentColor = passed ? tokens.signal.sage : isCurrent ? tokens.phase[phase] : tokens.ink.faint;
         return (
           <Box
             key={phase}
             sx={{
               flex: 1,
               position: 'relative',
+              zIndex: 1,
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
-              pt: 1,
             }}
           >
-            {/* connector */}
-            {i > 0 && (
+            {/* node band — fixed height so the connector aligns to its center.
+                The opaque disc masks the line passing underneath. */}
+            <Box
+              sx={{
+                height: NODE_BAND,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
               <Box
                 sx={{
-                  position: 'absolute',
-                  top: 9,
-                  right: '50%',
-                  width: '100%',
-                  height: 1,
-                  bgcolor: passed ? `${tokens.signal.sage}66` : tokens.border.hair,
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  bgcolor: tokens.bg.panel, // masks the connector under the node
+                  display: 'grid',
+                  placeItems: 'center',
                 }}
-              />
-            )}
-            <Lamp color={color} size={10} pulse={isCurrent && !finished} ring={isCurrent && !finished} />
-            <Typography sx={{ fontFamily: mono, fontSize: '0.56rem', color: tokens.ink.faint, mt: 1, letterSpacing: '0.1em' }}>
+              >
+                <Lamp
+                  color={nodeColor}
+                  size={isCurrent && !finished ? 9 : 7}
+                  pulse={isCurrent && !finished}
+                  ring={isCurrent && !finished}
+                />
+              </Box>
+            </Box>
+
+            <Typography
+              sx={{
+                fontFamily: mono,
+                fontSize: '0.56rem',
+                color: tokens.ink.faint,
+                mt: 1,
+                letterSpacing: '0.1em',
+              }}
+            >
               {pad2(i + 1)}
             </Typography>
             <Typography
@@ -93,8 +164,17 @@ const TransitStrip: React.FC<{ task: Task }> = ({ task }) => {
             >
               {PHASE_LABELS[phase]}
             </Typography>
-            <Box sx={{ height: 2, width: 14, mt: 0.5, bgcolor: phaseLampColor, opacity: lit ? 1 : 0.3 }} />
-            {future && <Typography sx={{ fontFamily: mono, fontSize: '0.52rem', color: tokens.ink.faint, mt: 0.25 }}>—</Typography>}
+            <Box
+              sx={{
+                height: 2,
+                width: 14,
+                mt: 0.5,
+                bgcolor: accentColor,
+                opacity: lit ? 1 : 0.3,
+              }}
+            />
+            {/* spacer keeps future columns the same height as passed ones */}
+            {future && <Box sx={{ height: 14 }} />}
           </Box>
         );
       })}
