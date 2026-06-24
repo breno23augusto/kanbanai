@@ -14,6 +14,21 @@ export type Phase = 'planning' | 'todo' | 'doing' | 'validating' | 'testing' | '
 
 export type Status = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 
+export interface PhaseOutput {
+  id: string;
+  task_id: string;
+  phase: Phase;
+  output: string;
+  summary: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskDetail {
+  task: Task;
+  phase_outputs: PhaseOutput[] | null;
+}
+
 export const PHASE_ORDER: Phase[] = [
   'planning',
   'todo',

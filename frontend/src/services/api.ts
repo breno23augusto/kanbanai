@@ -1,4 +1,4 @@
-import { Task } from '../types/task';
+import { Task, TaskDetail } from '../types/task';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -18,6 +18,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return json.data as T;
 }
 
+const tasksPath = (id: string) => `/api/v1/tasks/${id}`;
+
 export const api = {
   createTask: (data: { title: string; description: string; priority: number }) =>
     request<Task>('/api/v1/tasks', {
@@ -32,17 +34,20 @@ export const api = {
     return data ?? [];
   },
 
-  getTask: (id: string) => request<Task>(`/api/v1/tasks/${id}`),
+  getTask: (id: string) => request<Task>(tasksPath(id)),
+
+  // Full detail including phase outputs (what the harness produced per phase).
+  getTaskDetail: (id: string) => request<TaskDetail>(tasksPath(id)),
 
   updateTask: (id: string, data: { title: string; description: string; priority: number; version: number }) =>
-    request<Task>(`/api/v1/tasks/${id}`, {
+    request<Task>(tasksPath(id), {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
 
   deleteTask: (id: string) =>
-    request<void>(`/api/v1/tasks/${id}`, { method: 'DELETE' }),
+    request<void>(tasksPath(id), { method: 'DELETE' }),
 
   retryTask: (id: string) =>
-    request<void>(`/api/v1/tasks/${id}/retry`, { method: 'POST' }),
+    request<void>(tasksPath(id) + '/retry', { method: 'POST' }),
 };
