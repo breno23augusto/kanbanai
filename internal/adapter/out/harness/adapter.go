@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -23,11 +24,12 @@ type Adapter struct {
 func NewAdapter(
 	configs map[entity.Phase]entity.PhaseConfig,
 	mcpPort string,
+	apiBaseURL string,
 	dispatcher event.Dispatcher,
 ) *Adapter {
 	return &Adapter{
 		configs:         configs,
-		builder:         NewCommandBuilder(mcpPort),
+		builder:         NewCommandBuilder(mcpPort, apiBaseURL),
 		dispatcher:      dispatcher,
 		processRegistry: make(map[string]*exec.Cmd),
 		killed:          make(map[string]struct{}),
@@ -98,17 +100,24 @@ func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.
 		return fmt.Errorf("failed to build command: %w", err)
 	}
 
+	// Capture the harness stdout/stderr so a non-zero exit (or timeout) carries
+	// a human-readable reason instead of a bare "exit status 1". Without this
+	// the frontend has nothing to explain why a phase failed (SPEC §32.3).
+	output := &bytes.Buffer{}
+	cmd.Stdout = output
+	cmd.Stderr = output
+
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return fmt.Errorf("failed to start harness: %w", err)
 	}
 
 	a.RegisterProcess(task.ID, cmd)
-	go a.monitorProcess(cmd, cancel, task.ID, phase)
+	go a.monitorProcess(cmd, cancel, task.ID, phase, output)
 	return nil
 }
 
-func (a *Adapter) monitorProcess(cmd *exec.Cmd, cancel context.CancelFunc, taskID string, phase entity.Phase) {
+func (a *Adapter) monitorProcess(cmd *exec.Cmd, cancel context.CancelFunc, taskID string, phase entity.Phase, output *bytes.Buffer) {
 	defer a.UnregisterProcess(taskID)
 	defer cancel()
 
@@ -131,10 +140,17 @@ func (a *Adapter) monitorProcess(cmd *exec.Cmd, cancel context.CancelFunc, taskI
 	// without complete_phase being called leaves the task in progress; that is
 	// a harness misbehavior and is not retried automatically.
 	if err != nil {
+		// The captured output is what makes a failure debuggable: it contains
+		// the harness wrapper's own diagnostics (e.g. "agent prompt failed: …",
+		// "complete failed: 404 …"). Trim to the tail to bound storage.
+		tail := output.String()
+		if len(tail) > 4000 {
+			tail = tail[len(tail)-4000:]
+		}
 		a.dispatcher.Publish(event.Event{
 			Type:      event.HarnessErrorOccurred,
 			TaskID:    taskID,
-			Payload:   map[string]any{"phase": phase, "error": err.Error()},
+			Payload:   map[string]any{"phase": phase, "error": err.Error(), "output": tail},
 			Timestamp: time.Now(),
 		})
 	}

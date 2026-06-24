@@ -8,7 +8,7 @@ import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
 import { Lamp } from '../components/Lamp';
 import { useTasks } from '../hooks/useTasks';
 import { useSSE } from '../hooks/useSSE';
-import { Task, Status } from '../types/task';
+import { Status } from '../types/task';
 import { SSEEvent } from '../types/event';
 import { tokens } from '../theme/theme';
 
@@ -33,8 +33,13 @@ const mono = '"JetBrains Mono", monospace';
 export const Dashboard: React.FC = () => {
   const { tasks, loading, createTask, reload } = useTasks();
   const [createOpen, setCreateOpen] = useState(false);
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [now, setNow] = useState(() => new Date());
+
+  // Derive the open task from the live board list so the drawer reflects
+  // state changes (status, error_message) that arrive via SSE reloads, instead
+  // of the stale object captured at click time.
+  const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) ?? null : null;
 
   // live console clock — the one ambient motion on the chrome.
   useEffect(() => {
@@ -289,13 +294,13 @@ export const Dashboard: React.FC = () => {
             </Box>
           </Box>
         ) : (
-          <KanbanBoard tasks={tasks} onTaskClick={setSelectedTask} />
+          <KanbanBoard tasks={tasks} onTaskClick={(t) => setSelectedTaskId(t.id)} />
         )}
       </Box>
 
       <CreateTaskDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={handleCreate} />
 
-      <TaskDetailDrawer task={selectedTask} open={!!selectedTask} onClose={() => setSelectedTask(null)} />
+      <TaskDetailDrawer task={selectedTask} open={!!selectedTask} onClose={() => setSelectedTaskId(null)} onTaskChanged={reload} />
     </Box>
   );
 };

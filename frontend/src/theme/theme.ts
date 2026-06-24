@@ -45,6 +45,7 @@ export const tokens = {
     completed: '#7FB98A',
     failed: '#E8696B',
     cancelled: '#5B6B7E',
+    paused: '#E8C46B',
   } as Record<string, string>,
 };
 

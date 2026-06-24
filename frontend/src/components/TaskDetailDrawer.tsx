@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Task, PhaseOutput, PHASE_ORDER, PHASE_LABELS } from '../types/task';
 import { api } from '../services/api';
 import { Lamp } from './Lamp';
+import { MarkdownView, SubtaskSummary, extractSubtasks } from './MarkdownView';
 import { tokens } from '../theme/theme';
 import {
   Drawer,
@@ -12,14 +13,24 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Button,
+  TextField,
+  Tooltip,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import CloseIcon from '@mui/icons-material/Close';
+import PauseIcon from '@mui/icons-material/Pause';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import EditIcon from '@mui/icons-material/Edit';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import SaveIcon from '@mui/icons-material/Save';
 
 interface TaskDetailDrawerProps {
   task: Task | null;
   open: boolean;
   onClose: () => void;
+  /** Called after any mutation so the board list refreshes. */
+  onTaskChanged?: () => void;
 }
 
 const mono = '"JetBrains Mono", monospace';
@@ -31,6 +42,7 @@ const STATUS_LABEL: Record<string, string> = {
   completed: 'COMPLETED',
   failed: 'FAILED',
   cancelled: 'HALTED',
+  paused: 'PAUSED',
 };
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -182,12 +194,26 @@ const TransitStrip: React.FC<{ task: Task }> = ({ task }) => {
   );
 };
 
-export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, onClose }) => {
+export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, onClose, onTaskChanged }) => {
   const [phaseOutputs, setPhaseOutputs] = useState<PhaseOutput[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<string | false>(task?.current_phase ?? false);
 
+  // local, mutable copy of the task so the drawer reflects mutations
+  // (pause/resume/edit) immediately without waiting for the board to reload.
+  const [localTask, setLocalTask] = useState<Task | null>(task);
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editPriority, setEditPriority] = useState(0);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  // sync local task + load detail whenever a different task is opened.
   useEffect(() => {
+    setLocalTask(task);
+    setEditing(false);
+    setEditError(null);
     if (!open || !task) return;
     let cancelled = false;
     setLoading(true);
@@ -196,7 +222,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
       .then((detail) => {
         if (cancelled) return;
         setPhaseOutputs(detail?.phase_outputs ?? []);
-        // default-open the current (or last) phase that has output
+        if (detail?.task) setLocalTask(detail.task);
         const have = (detail?.phase_outputs ?? []).map((p) => p.phase);
         setExpanded(have.includes(task.current_phase) ? task.current_phase : (have[have.length - 1] ?? false));
       })
@@ -209,10 +235,74 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
 
   if (!task) return null;
 
-  const statusLamp = tokens.status[task.status] ?? tokens.ink.faint;
-  const live = task.status === 'in_progress';
+  const t = localTask ?? task;
+  const statusLamp = tokens.status[t.status] ?? tokens.ink.faint;
+  const live = t.status === 'in_progress';
+  const paused = t.status === 'paused';
   const outputsByPhase = new Map<string, PhaseOutput>();
   for (const po of phaseOutputs) outputsByPhase.set(po.phase, po);
+
+  const refresh = async () => {
+    const detail = await api.getTaskDetail(t.id);
+    if (detail?.task) setLocalTask(detail.task);
+    setPhaseOutputs(detail?.phase_outputs ?? []);
+    onTaskChanged?.();
+  };
+
+  const runAction = async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await fn();
+      await refresh();
+    } catch (err) {
+      console.error(`${label} failed:`, err);
+      alert(`${label} failed: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePause = () => runAction('Pause', () => api.pauseTask(t.id));
+  const handleResume = () => runAction('Resume', () => api.resumeTask(t.id));
+  const handleRetry = () => runAction('Retry', () => api.retryTask(t.id));
+
+  const startEdit = () => {
+    setEditTitle(t.title);
+    setEditDesc(t.description);
+    setEditPriority(t.priority);
+    setEditError(null);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditError(null);
+  };
+
+  const saveEdit = async () => {
+    setBusy(true);
+    setEditError(null);
+    try {
+      await api.updateTask(t.id, {
+        title: editTitle.trim(),
+        description: editDesc,
+        priority: editPriority,
+        version: t.version,
+      });
+      setEditing(false);
+      await refresh();
+    } catch (err) {
+      const msg = (err as Error).message ?? '';
+      if (msg.includes('409')) {
+        setEditError('The task was modified elsewhere. Reloading — please try again.');
+        await refresh();
+      } else {
+        setEditError(`Save failed: ${msg}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <Drawer
@@ -235,7 +325,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Lamp color={statusLamp} size={9} pulse={live} ring={live} />
             <Typography sx={{ fontFamily: mono, fontSize: '0.66rem', letterSpacing: '0.14em', color: statusLamp }}>
-              {STATUS_LABEL[task.status] ?? task.status.toUpperCase()}
+              {STATUS_LABEL[t.status] ?? t.status.toUpperCase()}
             </Typography>
             <IconButton onClick={onClose} size="small" sx={{ ml: 'auto' }}>
               <CloseIcon fontSize="small" />
@@ -243,7 +333,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
           </Box>
 
           <Typography sx={{ fontFamily: sans, fontWeight: 700, fontSize: '1.15rem', lineHeight: 1.2, color: tokens.ink.text, pr: 4 }}>
-            {task.title}
+            {t.title}
           </Typography>
 
           {/* transit strip */}
@@ -251,20 +341,130 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
             <Typography sx={{ fontFamily: mono, fontSize: '0.56rem', letterSpacing: '0.14em', color: tokens.ink.faint, textTransform: 'uppercase', mb: 1.5 }}>
               transit
             </Typography>
-            <TransitStrip task={task} />
+            <TransitStrip task={t} />
+          </Box>
+
+          {/* action bar — pause / resume / edit / retry */}
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', pt: 0.5 }}>
+            {live && (
+              <Tooltip title="Pause the running harness for this task">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<PauseIcon />}
+                  disabled={busy}
+                  onClick={handlePause}
+                  sx={actionSx(tokens.signal.amber)}
+                >
+                  Pause
+                </Button>
+              </Tooltip>
+            )}
+            {paused && (
+              <Tooltip title="Resume the current phase">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<PlayArrowIcon />}
+                  disabled={busy}
+                  onClick={handleResume}
+                  sx={actionSx(tokens.signal.cyan)}
+                >
+                  Resume
+                </Button>
+              </Tooltip>
+            )}
+            {(t.status === 'failed' || paused) && (
+              <Tooltip title="Re-dispatch the current phase from scratch">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<RestartAltIcon />}
+                  disabled={busy}
+                  onClick={handleRetry}
+                  sx={actionSx(tokens.signal.sage)}
+                >
+                  Retry
+                </Button>
+              </Tooltip>
+            )}
+            {!editing && t.status !== 'completed' && t.status !== 'cancelled' && (
+              <Tooltip title="Edit title, description and priority">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<EditIcon />}
+                  disabled={busy}
+                  onClick={startEdit}
+                  sx={actionSx(tokens.ink.dim)}
+                >
+                  Edit
+                </Button>
+              </Tooltip>
+            )}
+            {busy && <CircularProgress size={18} sx={{ color: tokens.signal.cyan, alignSelf: 'center' }} />}
           </Box>
         </Box>
 
         {/* scroll body */}
         <Box sx={{ flex: 1, overflowY: 'auto', p: 2.5 }}>
-          {/* description */}
+          {/* description / edit form */}
           <Box sx={{ mb: 3 }}>
             <Typography sx={{ fontFamily: mono, fontSize: '0.56rem', letterSpacing: '0.14em', color: tokens.ink.faint, textTransform: 'uppercase', mb: 1 }}>
               brief
             </Typography>
-            <Typography sx={{ fontFamily: sans, fontSize: '0.86rem', color: tokens.ink.dim, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
-              {task.description || 'No description provided.'}
-            </Typography>
+            {editing ? (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                <TextField
+                  label="Title"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  size="small"
+                  fullWidth
+                />
+                <TextField
+                  label="Description"
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  size="small"
+                  fullWidth
+                  multiline
+                  minRows={3}
+                />
+                <TextField
+                  label="Priority"
+                  type="number"
+                  value={editPriority}
+                  onChange={(e) => setEditPriority(Number(e.target.value))}
+                  size="small"
+                  sx={{ maxWidth: 140 }}
+                />
+                {editError && (
+                  <Typography sx={{ fontFamily: mono, fontSize: '0.66rem', color: tokens.signal.coral }}>
+                    {editError}
+                  </Typography>
+                )}
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<SaveIcon />}
+                    disabled={busy || editTitle.trim().length === 0}
+                    onClick={saveEdit}
+                    sx={{ bgcolor: tokens.signal.sage, '&:hover': { bgcolor: tokens.signal.sage } }}
+                  >
+                    Save
+                  </Button>
+                  <Button size="small" variant="outlined" disabled={busy} onClick={cancelEdit}>
+                    Cancel
+                  </Button>
+                </Box>
+              </Box>
+            ) : (
+              <Typography sx={{ fontFamily: sans, fontSize: '0.86rem', color: tokens.ink.dim, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+                {t.description || 'No description provided.'}
+              </Typography>
+            )}
           </Box>
 
           {/* metadata */}
@@ -280,11 +480,66 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
               bgcolor: tokens.bg.inset,
             }}
           >
-            <Meta label="created" value={new Date(task.created_at).toLocaleString()} />
-            <Meta label="updated" value={new Date(task.updated_at).toLocaleString()} />
-            <Meta label="version" value={`v${task.version}`} />
-            <Meta label="phase" value={task.current_phase} />
+            <Meta label="created" value={new Date(t.created_at).toLocaleString()} />
+            <Meta label="updated" value={new Date(t.updated_at).toLocaleString()} />
+            <Meta label="version" value={`v${t.version}`} />
+            <Meta label="phase" value={t.current_phase} />
           </Box>
+
+          {/* failure reason — surfaced when the task entered the failed state.
+              The backend captures the harness stdout/stderr that caused the
+              final retry to exhaust, so the operator can see *why* it failed. */}
+          {t.status === 'failed' && (
+            <Box
+              sx={{
+                mb: 3,
+                border: `1px solid ${tokens.signal.coral}55`,
+                borderRadius: 1,
+                bgcolor: `${tokens.signal.coral}0a`,
+                overflow: 'hidden',
+              }}
+            >
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  px: 1.25,
+                  py: 0.75,
+                  borderBottom: `1px solid ${tokens.signal.coral}33`,
+                  bgcolor: `${tokens.signal.coral}12`,
+                }}
+              >
+                <Lamp color={tokens.signal.coral} size={7} />
+                <Typography sx={{ fontFamily: mono, fontSize: '0.6rem', letterSpacing: '0.14em', color: tokens.signal.coral, textTransform: 'uppercase' }}>
+                  failure · {PHASE_LABELS[t.current_phase] ?? t.current_phase}
+                </Typography>
+              </Box>
+              {t.error_message ? (
+                <Box
+                  component="pre"
+                  sx={{
+                    m: 0,
+                    p: 1.25,
+                    maxHeight: 240,
+                    overflowY: 'auto',
+                    fontFamily: mono,
+                    fontSize: '0.7rem',
+                    lineHeight: 1.5,
+                    color: tokens.ink.dim,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {t.error_message}
+                </Box>
+              ) : (
+                <Typography sx={{ p: 1.25, fontFamily: mono, fontSize: '0.7rem', color: tokens.ink.faint }}>
+                  No failure reason was captured for this task.
+                </Typography>
+              )}
+            </Box>
+          )}
 
           {/* phase outputs */}
           <Typography sx={{ fontFamily: mono, fontSize: '0.56rem', letterSpacing: '0.14em', color: tokens.ink.faint, textTransform: 'uppercase', mb: 1 }}>
@@ -328,26 +583,13 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
                     </Box>
                   </AccordionSummary>
                   <AccordionDetails sx={{ pt: 0, pb: 1.5 }}>
-                    <Box
-                      component="pre"
-                      sx={{
-                        fontFamily: mono,
-                        fontSize: '0.74rem',
-                        lineHeight: 1.6,
-                        color: tokens.ink.dim,
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        m: 0,
-                        p: 1.25,
-                        bgcolor: tokens.bg.inset,
-                        border: `1px solid ${tokens.border.hair}`,
-                        borderRadius: 1,
-                        maxHeight: 420,
-                        overflowY: 'auto',
-                      }}
-                    >
-                      {text}
-                    </Box>
+                    {/* Subtask status summary — only renders when the phase
+                        output contains GFM task-list items (`- [ ]`/`- [x]`). */}
+                    {extractSubtasks(text).length > 0 && <SubtaskSummary source={text} />}
+                    {/* Rendered markdown — headings, lists, tables, fenced
+                        code, and the task-list checkboxes that surface
+                        subtask status visually. */}
+                    <MarkdownView source={text} />
                   </AccordionDetails>
                 </Accordion>
               );
@@ -358,6 +600,16 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
     </Drawer>
   );
 };
+
+const actionSx = (color: string) => ({
+  borderColor: `${color}88`,
+  color,
+  textTransform: 'none',
+  fontFamily: '"JetBrains Mono", monospace',
+  fontSize: '0.66rem',
+  letterSpacing: '0.04em',
+  '&:hover': { borderColor: color, bgcolor: `${color}14` },
+});
 
 const Meta: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <Box>

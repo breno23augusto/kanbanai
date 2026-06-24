@@ -57,6 +57,7 @@ func (uc *CreateTask) Execute(ctx context.Context, input dto.CreateTaskInput) (*
 		Status:       task.Status,
 		Priority:     task.Priority,
 		Version:      task.Version,
+		ErrorMessage: task.ErrorMessage,
 		CreatedAt:    task.CreatedAt,
 		UpdatedAt:    task.UpdatedAt,
 	}, nil

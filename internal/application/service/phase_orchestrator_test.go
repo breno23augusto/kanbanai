@@ -122,7 +122,7 @@ func TestOrchestratorStartFlow(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
 	disp := &recordingDisp{}
-	pb := NewPromptBuilder()
+	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
 	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
 
@@ -164,7 +164,7 @@ func TestOrchestratorAdvancePhaseTransitionsLane(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
 	disp := &recordingDisp{}
-	pb := NewPromptBuilder()
+	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
 	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
 
@@ -217,7 +217,7 @@ func TestOrchestratorAdvancePhaseReachesDone(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
 	disp := &recordingDisp{}
-	pb := NewPromptBuilder()
+	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
 	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
 
@@ -266,7 +266,7 @@ func TestOrchestratorAdvancePhaseReachesDone(t *testing.T) {
 
 func TestOrchestratorKillProcess(t *testing.T) {
 	harness := &fakeHarness{}
-	orch := NewPhaseOrchestrator(newFakeTaskRepoSvc(), &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder(), &recordingDisp{})
+	orch := NewPhaseOrchestrator(newFakeTaskRepoSvc(), &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
 
 	orch.KillProcess("t1")
 
@@ -280,7 +280,7 @@ func TestOrchestratorRestartPhaseRedpatchesAndResetsAttempts(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
 	disp := &recordingDisp{}
-	pb := NewPromptBuilder()
+	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
 	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
 
@@ -312,10 +312,257 @@ func TestOrchestratorRestartPhaseRedpatchesAndResetsAttempts(t *testing.T) {
 	harness.mu.Unlock()
 
 	// Retry counter should be reset to 0 (a subsequent failure starts at attempt 1).
-	orch.HandleRetry(context.Background(), "t1", entity.PhaseDoing, 0)
+	orch.HandleRetry(context.Background(), "t1", entity.PhaseDoing, 0, "")
 	orch.mu.Lock()
 	if orch.retryAttempts["t1"] != 1 {
 		t.Errorf("retryAttempts = %d, want 1 after reset + one failure", orch.retryAttempts["t1"])
 	}
 	orch.mu.Unlock()
+}
+
+func TestOrchestratorPauseTaskKillsProcessAndMarksPaused(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	disp := &recordingDisp{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
+
+	task := &entity.Task{
+		ID:           "t1",
+		Title:        "Test",
+		CurrentPhase: entity.PhaseDoing,
+		Status:       entity.StatusInProgress,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	repo.tasks["t1"] = task
+
+	if err := orch.PauseTask(context.Background(), "t1"); err != nil {
+		t.Fatalf("PauseTask error: %v", err)
+	}
+
+	// Harness process must be killed.
+	harness.mu.Lock()
+	if len(harness.killedTasks) != 1 || harness.killedTasks[0] != "t1" {
+		t.Errorf("expected kill for t1, got %v", harness.killedTasks)
+	}
+	harness.mu.Unlock()
+
+	// Status must move to paused; phase is preserved.
+	updated := repo.tasks["t1"]
+	if updated.Status != entity.StatusPaused {
+		t.Errorf("status = %s, want paused", updated.Status)
+	}
+	if updated.CurrentPhase != entity.PhaseDoing {
+		t.Errorf("phase = %s, want doing (unchanged)", updated.CurrentPhase)
+	}
+
+	// A TaskPaused event must be emitted.
+	found := false
+	for _, e := range disp.getEvents() {
+		if e.Type == event.TaskPaused {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected TaskPaused event")
+	}
+}
+
+func TestOrchestratorPauseTaskRejectsNonRunningTask(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+
+	repo.tasks["t1"] = &entity.Task{
+		ID:           "t1",
+		CurrentPhase: entity.PhasePlanning,
+		Status:       entity.StatusPending,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := orch.PauseTask(context.Background(), "t1"); err == nil {
+		t.Fatal("expected error pausing a non-running task, got nil")
+	}
+
+	harness.mu.Lock()
+	if len(harness.killedTasks) != 0 {
+		t.Errorf("expected no kill, got %v", harness.killedTasks)
+	}
+	harness.mu.Unlock()
+}
+
+func TestOrchestratorResumeTaskRedispatchesAndEmitsEvent(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	disp := &recordingDisp{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
+
+	task := &entity.Task{
+		ID:           "t1",
+		Title:        "Test",
+		CurrentPhase: entity.PhaseDoing,
+		Status:       entity.StatusPaused,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	repo.tasks["t1"] = task
+
+	if err := orch.ResumeTask(context.Background(), "t1"); err != nil {
+		t.Fatalf("ResumeTask error: %v", err)
+	}
+
+	// dispatchPhase sets status to in_progress and re-dispatches the phase.
+	updated := repo.tasks["t1"]
+	if updated.Status != entity.StatusInProgress {
+		t.Errorf("status = %s, want in_progress", updated.Status)
+	}
+
+	harness.mu.Lock()
+	if len(harness.dispatchedPhases) != 1 || harness.dispatchedPhases[0] != entity.PhaseDoing {
+		t.Errorf("expected doing re-dispatch, got %v", harness.dispatchedPhases)
+	}
+	harness.mu.Unlock()
+
+	// A TaskResumed event must be emitted.
+	found := false
+	for _, e := range disp.getEvents() {
+		if e.Type == event.TaskResumed {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected TaskResumed event")
+	}
+}
+
+func TestOrchestratorResumeTaskRejectsNonPausedTask(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+
+	repo.tasks["t1"] = &entity.Task{
+		ID:           "t1",
+		CurrentPhase: entity.PhaseDoing,
+		Status:       entity.StatusInProgress,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := orch.ResumeTask(context.Background(), "t1"); err == nil {
+		t.Fatal("expected error resuming a non-paused task, got nil")
+	}
+
+	harness.mu.Lock()
+	if len(harness.dispatchedPhases) != 0 {
+		t.Errorf("expected no dispatch, got %v", harness.dispatchedPhases)
+	}
+	harness.mu.Unlock()
+}
+
+func TestOrchestratorReopenPhaseMovesBackAndRedispatches(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	disp := &recordingDisp{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
+
+	repo.tasks["t1"] = &entity.Task{
+		ID:           "t1",
+		Title:        "tic tac toe",
+		CurrentPhase: entity.PhaseValidating,
+		Status:       entity.StatusInProgress,
+		ErrorMessage: "stale",
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := orch.ReopenPhase(context.Background(), "t1", entity.PhaseDoing, "criteria X not met"); err != nil {
+		t.Fatalf("ReopenPhase error: %v", err)
+	}
+
+	updated := repo.tasks["t1"]
+	if updated.CurrentPhase != entity.PhaseDoing {
+		t.Errorf("phase = %s, want doing", updated.CurrentPhase)
+	}
+	if updated.ErrorMessage != "" {
+		t.Errorf("error message should be cleared on reopen, got %q", updated.ErrorMessage)
+	}
+
+	harness.mu.Lock()
+	if len(harness.dispatchedPhases) != 1 || harness.dispatchedPhases[0] != entity.PhaseDoing {
+		t.Errorf("expected doing re-dispatch, got %v", harness.dispatchedPhases)
+	}
+	harness.mu.Unlock()
+
+	found := false
+	for _, e := range disp.getEvents() {
+		if e.Type == event.LaneReopened {
+			from, _ := e.Payload.(map[string]any)["from"]
+			to, _ := e.Payload.(map[string]any)["to"]
+			if from == entity.PhaseValidating && to == entity.PhaseDoing {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected LaneReopened event from validating to doing")
+	}
+}
+
+func TestOrchestratorReopenPhaseRejectsNonPrecedingTarget(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+
+	repo.tasks["t1"] = &entity.Task{
+		ID:           "t1",
+		CurrentPhase: entity.PhaseValidating,
+		Status:       entity.StatusInProgress,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	// target == current: not allowed (use RestartPhase for same-phase reruns).
+	if err := orch.ReopenPhase(context.Background(), "t1", entity.PhaseValidating, ""); err == nil {
+		t.Fatal("expected error reopening to the current phase, got nil")
+	}
+	// target later than current: not allowed.
+	if err := orch.ReopenPhase(context.Background(), "t1", entity.PhaseTesting, ""); err == nil {
+		t.Fatal("expected error reopening to a later phase, got nil")
+	}
+	// terminal target: not allowed.
+	if err := orch.ReopenPhase(context.Background(), "t1", entity.PhaseDone, ""); err == nil {
+		t.Fatal("expected error reopening to terminal phase, got nil")
+	}
+
+	harness.mu.Lock()
+	if len(harness.dispatchedPhases) != 0 {
+		t.Errorf("expected no dispatch on rejected reopen, got %v", harness.dispatchedPhases)
+	}
+	harness.mu.Unlock()
+}
+
+func TestOrchestratorReopenPhaseRejectsInactiveTask(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+
+	repo.tasks["t1"] = &entity.Task{
+		ID:           "t1",
+		CurrentPhase: entity.PhaseValidating,
+		Status:       entity.StatusFailed,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := orch.ReopenPhase(context.Background(), "t1", entity.PhaseDoing, ""); err == nil {
+		t.Fatal("expected error reopening a failed task, got nil")
+	}
 }

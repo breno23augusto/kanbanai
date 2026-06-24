@@ -16,6 +16,7 @@ const STATUS_LABEL: Record<string, string> = {
   completed: 'done',
   failed: 'failed',
   cancelled: 'halt',
+  paused: 'paused',
 };
 
 export const TaskCard: React.FC<TaskCardProps> = ({ task, phaseLamp, onClick }) => {

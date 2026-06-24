@@ -50,4 +50,10 @@ export const api = {
 
   retryTask: (id: string) =>
     request<void>(tasksPath(id) + '/retry', { method: 'POST' }),
+
+  pauseTask: (id: string) =>
+    request<void>(tasksPath(id) + '/pause', { method: 'POST' }),
+
+  resumeTask: (id: string) =>
+    request<void>(tasksPath(id) + '/resume', { method: 'POST' }),
 };

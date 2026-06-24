@@ -11,6 +11,7 @@ func RegisterTools(server *mcp.Server, container *di.Container) {
 	mcp.AddTool(server, reportProgressToolDef(), reportProgressHandler(container))
 	mcp.AddTool(server, updateTaskOutputToolDef(), updateTaskOutputHandler(container))
 	mcp.AddTool(server, completePhaseToolDef(), completePhaseHandler(container))
+	mcp.AddTool(server, reopenPhaseToolDef(), reopenPhaseHandler(container))
 	mcp.AddTool(server, getTaskToolDef(), getTaskHandler(container))
 }
 

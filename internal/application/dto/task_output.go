@@ -13,6 +13,7 @@ type TaskOutput struct {
 	Status       entity.Status `json:"status"`
 	Priority     int           `json:"priority"`
 	Version      int           `json:"version"`
+	ErrorMessage string        `json:"error_message"`
 	CreatedAt    time.Time     `json:"created_at"`
 	UpdatedAt    time.Time     `json:"updated_at"`
 }

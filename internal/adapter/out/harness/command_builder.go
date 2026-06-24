@@ -8,11 +8,12 @@ import (
 )
 
 type CommandBuilder struct {
-	mcpPort string
+	mcpPort    string
+	apiBaseURL string
 }
 
-func NewCommandBuilder(mcpPort string) *CommandBuilder {
-	return &CommandBuilder{mcpPort: mcpPort}
+func NewCommandBuilder(mcpPort, apiBaseURL string) *CommandBuilder {
+	return &CommandBuilder{mcpPort: mcpPort, apiBaseURL: apiBaseURL}
 }
 
 func (b *CommandBuilder) Build(ctx context.Context, harnessCmd string, modelName string, taskID string, prompt string) (*exec.Cmd, error) {
@@ -21,6 +22,7 @@ func (b *CommandBuilder) Build(ctx context.Context, harnessCmd string, modelName
 		fmt.Sprintf("KANBANAI_TASK_ID=%s", taskID),
 		fmt.Sprintf("KANBANAI_MCP_PORT=%s", b.mcpPort),
 		fmt.Sprintf("KANBANAI_MCP_URL=http://localhost:%s/mcp/sse", b.mcpPort),
+		fmt.Sprintf("KANBANAI_API_BASE_URL=%s", b.apiBaseURL),
 	)
 	return cmd, nil
 }

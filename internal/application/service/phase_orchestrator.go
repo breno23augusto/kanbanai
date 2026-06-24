@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,6 +76,7 @@ func (o *PhaseOrchestrator) StartFlow(ctx context.Context, task *entity.Task) er
 	// (SPEC §32.2).
 	updated, err := o.retryUpdate(ctx, task.ID, func(t *entity.Task) {
 		t.Status = entity.StatusInProgress
+		t.ErrorMessage = "" // fresh run clears any prior failure reason
 		t.UpdatedAt = time.Now()
 	})
 	if err != nil {
@@ -165,6 +167,7 @@ func (o *PhaseOrchestrator) AdvancePhase(ctx context.Context, taskID string) err
 func (o *PhaseOrchestrator) dispatchPhase(ctx context.Context, task *entity.Task, phase entity.Phase) error {
 	updated, err := o.retryUpdate(ctx, task.ID, func(t *entity.Task) {
 		t.Status = entity.StatusInProgress
+		t.ErrorMessage = "" // a (re)dispatch is a fresh attempt; clear stale reason
 		t.UpdatedAt = time.Now()
 	})
 	if err != nil {
@@ -198,8 +201,9 @@ func (o *PhaseOrchestrator) KillProcess(taskID string) {
 // HandleRetry is triggered by the HarnessErrorOccurred subscriber. It tracks
 // the attempt count for the current phase and either re-dispatches the phase
 // (with linear backoff) or marks the task as failed when retries are exhausted
-// (SPEC §6.3.6 / §13.2 / §32.3).
-func (o *PhaseOrchestrator) HandleRetry(ctx context.Context, taskID string, phase entity.Phase, maxRetries int) {
+// (SPEC §6.3.6 / §13.2 / §32.3). The reason carries the captured harness
+// output/error so the failure is explainable on the frontend.
+func (o *PhaseOrchestrator) HandleRetry(ctx context.Context, taskID string, phase entity.Phase, maxRetries int, reason string) {
 	o.mu.Lock()
 	o.retryAttempts[taskID]++
 	attempt := o.retryAttempts[taskID]
@@ -208,6 +212,7 @@ func (o *PhaseOrchestrator) HandleRetry(ctx context.Context, taskID string, phas
 	if attempt > maxRetries {
 		if _, err := o.retryUpdate(ctx, taskID, func(t *entity.Task) {
 			t.Status = entity.StatusFailed
+			t.ErrorMessage = formatFailureReason(phase, attempt, reason)
 			t.UpdatedAt = time.Now()
 		}); err != nil {
 			slog.Error("orchestrator: failed to mark task as failed", "taskID", taskID, "error", err)
@@ -215,7 +220,7 @@ func (o *PhaseOrchestrator) HandleRetry(ctx context.Context, taskID string, phas
 		o.dispatcher.Publish(event.Event{
 			Type:      event.PhaseEvent(string(phase), "failed"),
 			TaskID:    taskID,
-			Payload:   map[string]any{"phase": phase, "attempt": attempt},
+			Payload:   map[string]any{"phase": phase, "attempt": attempt, "reason": formatFailureReason(phase, attempt, reason)},
 			Timestamp: time.Now(),
 		})
 		return
@@ -226,7 +231,7 @@ func (o *PhaseOrchestrator) HandleRetry(ctx context.Context, taskID string, phas
 	o.dispatcher.Publish(event.Event{
 		Type:      event.PhaseEvent(string(phase), "retry"),
 		TaskID:    taskID,
-		Payload:   map[string]any{"phase": phase, "attempt": attempt},
+		Payload:   map[string]any{"phase": phase, "attempt": attempt, "reason": reason},
 		Timestamp: time.Now(),
 	})
 
@@ -248,4 +253,138 @@ func (o *PhaseOrchestrator) RestartPhase(ctx context.Context, taskID string) err
 	}
 	o.resetAttempts(taskID)
 	return o.dispatchPhase(ctx, task, task.CurrentPhase)
+}
+
+// PauseTask stops the running harness process for the task and marks the task
+// as paused. Only tasks currently in_progress can be paused. The harness
+// process is killed via KillProcess, which marks the termination as
+// intentional so monitorProcess does not trigger an automatic retry/failure
+// (SPEC §32.3). A paused task can later be resumed via ResumeTask or edited
+// via the regular UpdateTask use case.
+func (o *PhaseOrchestrator) PauseTask(ctx context.Context, taskID string) error {
+	task, err := o.taskRepo.Find(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("find task: %w", err)
+	}
+	if task.Status != entity.StatusInProgress {
+		return fmt.Errorf("task %s is not running (status=%s), cannot pause", taskID, task.Status)
+	}
+
+	// Stop the running harness first so it does not keep producing MCP calls
+	// or race with the status update.
+	o.harnessAdapter.KillProcess(taskID)
+
+	updated, err := o.retryUpdate(ctx, taskID, func(t *entity.Task) {
+		t.Status = entity.StatusPaused
+		t.UpdatedAt = time.Now()
+	})
+	if err != nil {
+		return fmt.Errorf("update task status: %w", err)
+	}
+
+	o.dispatcher.Publish(event.Event{
+		Type:      event.TaskPaused,
+		TaskID:    updated.ID,
+		Payload:   map[string]any{"phase": updated.CurrentPhase},
+		Timestamp: time.Now(),
+	})
+	return nil
+}
+
+// ResumeTask re-dispatches the current phase of a paused task, resetting the
+// retry counter. Only tasks in the paused state can be resumed. This mirrors
+// RestartPhase but guards the state transition so a non-paused task cannot be
+// accidentally (re)dispatched.
+func (o *PhaseOrchestrator) ResumeTask(ctx context.Context, taskID string) error {
+	task, err := o.taskRepo.Find(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("find task: %w", err)
+	}
+	if task.Status != entity.StatusPaused {
+		return fmt.Errorf("task %s is not paused (status=%s), cannot resume", taskID, task.Status)
+	}
+
+	o.resetAttempts(taskID)
+
+	if err := o.dispatchPhase(ctx, task, task.CurrentPhase); err != nil {
+		return fmt.Errorf("dispatch phase: %w", err)
+	}
+
+	o.dispatcher.Publish(event.Event{
+		Type:      event.TaskResumed,
+		TaskID:    taskID,
+		Payload:   map[string]any{"phase": task.CurrentPhase},
+		Timestamp: time.Now(),
+	})
+	return nil
+}
+
+// ReopenPhase moves a task BACK to an earlier lane and re-dispatches it,
+// so problems detected by a downstream phase (typically Validating) get
+// reworked instead of being carried forward (SPEC §6.3.7).
+//
+// It is exposed to harnesses via the reopen_phase MCP tool and the
+// POST /tasks/:id/reopen HTTP endpoint. The calling harness is expected to be
+// in a later phase (e.g. validating) and to stop its own work after the call
+// returns, exactly like complete_phase; ReopenPhase therefore does NOT kill
+// the caller's process — it just moves the lane and dispatches the target
+// phase, mirroring how AdvancePhase hands off to the next lane.
+//
+// Guards:
+//   - targetPhase must be a known, non-terminal phase that precedes the
+//     task's current phase (target.Before(current)). Reopening to the current
+//     or a later phase is rejected; for same-phase re-runs use RestartPhase.
+//   - the task must be in an active status (pending/in_progress), so a failed
+//     task cannot be silently resurrected from a downstream phase.
+func (o *PhaseOrchestrator) ReopenPhase(ctx context.Context, taskID string, targetPhase entity.Phase, reason string) error {
+	task, err := o.taskRepo.Find(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("find task: %w", err)
+	}
+	if task.Status != entity.StatusPending && task.Status != entity.StatusInProgress {
+		return fmt.Errorf("task %s is not active (status=%s), cannot reopen", taskID, task.Status)
+	}
+	if targetPhase.IsTerminal() || targetPhase.Index() < 0 {
+		return fmt.Errorf("invalid target phase %s for reopen", targetPhase)
+	}
+	if !targetPhase.Before(task.CurrentPhase) {
+		return fmt.Errorf("cannot reopen to %s: it does not precede the current phase %s",
+			targetPhase, task.CurrentPhase)
+	}
+
+	fromPhase := task.CurrentPhase
+
+	updated, err := o.retryUpdate(ctx, taskID, func(t *entity.Task) {
+		t.CurrentPhase = targetPhase
+		t.Status = entity.StatusPending
+		t.ErrorMessage = "" // rework is a fresh attempt; clear stale reason
+		t.UpdatedAt = time.Now()
+	})
+	if err != nil {
+		return fmt.Errorf("update task for reopen: %w", err)
+	}
+	o.resetAttempts(taskID)
+
+	o.dispatcher.Publish(event.Event{
+		Type:      event.LaneReopened,
+		TaskID:    updated.ID,
+		Payload:   map[string]any{"from": fromPhase, "to": targetPhase, "reason": reason},
+		Timestamp: time.Now(),
+	})
+
+	return o.dispatchPhase(ctx, updated, targetPhase)
+}
+
+// formatFailureReason builds the human-readable explanation stored on the task
+// (and carried by the phase.<phase>.failed event) when retries are exhausted.
+// It combines the process wait error with the captured harness stdout/stderr,
+// which is where the actual cause lives (e.g. "agent prompt failed: ...",
+// "complete failed: 404 ...").
+func formatFailureReason(phase entity.Phase, attempt int, reason string) string {
+	header := fmt.Sprintf("Phase \"%s\" failed after %d attempt(s).", phase, attempt)
+	body := strings.TrimSpace(reason)
+	if body == "" {
+		return header + " No harness output was captured."
+	}
+	return header + "\n\n" + body
 }

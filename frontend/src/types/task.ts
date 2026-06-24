@@ -6,13 +6,14 @@ export interface Task {
   status: Status;
   priority: number;
   version: number;
+  error_message: string;
   created_at: string;
   updated_at: string;
 }
 
 export type Phase = 'planning' | 'todo' | 'doing' | 'validating' | 'testing' | 'done';
 
-export type Status = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+export type Status = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'paused';
 
 export interface PhaseOutput {
   id: string;

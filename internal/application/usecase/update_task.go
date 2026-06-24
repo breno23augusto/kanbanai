@@ -66,6 +66,7 @@ func (uc *UpdateTask) Execute(ctx context.Context, id string, input dto.CreateTa
 			Status:       task.Status,
 			Priority:     task.Priority,
 			Version:      task.Version,
+			ErrorMessage: task.ErrorMessage,
 			CreatedAt:    task.CreatedAt,
 			UpdatedAt:    task.UpdatedAt,
 		}, nil

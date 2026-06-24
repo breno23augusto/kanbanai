@@ -8,11 +8,14 @@ const (
 	TaskUpdated    EventType = "task.updated"
 	TaskDeleted    EventType = "task.deleted"
 	TaskStatusChanged EventType = "task.status_changed"
+	TaskPaused     EventType = "task.paused"
+	TaskResumed    EventType = "task.resumed"
 
 	// Lane transitions
 	LaneTransitionStarted   EventType = "lane.transition.started"
 	LaneTransitionCompleted EventType = "lane.transition.completed"
 	LaneTransitionFailed    EventType = "lane.transition.failed"
+	LaneReopened            EventType = "lane.reopened" // task moved back to an earlier phase (rework) (SPEC §6.3.7)
 
 	// Phase events
 	PhasePlanningStarted   EventType = "phase.planning.started"

@@ -16,13 +16,14 @@ func NewTaskTimelineQuerySQLite(db *sql.DB) *TaskTimelineQuerySQLite {
 }
 
 func (q *TaskTimelineQuerySQLite) Get(taskID string) (*query.TaskTimelineResult, error) {
-	taskQuery := `SELECT id, title, description, current_phase, status, priority, version, created_at, updated_at
+	taskQuery := `SELECT id, title, description, current_phase, status, priority, version, error_message, created_at, updated_at
 	               FROM tasks WHERE id = ?`
 	row := q.db.QueryRow(taskQuery, taskID)
 
 	task := &entity.Task{}
 	err := row.Scan(&task.ID, &task.Title, &task.Description, &task.CurrentPhase,
-		&task.Status, &task.Priority, &task.Version, &task.CreatedAt, &task.UpdatedAt)
+		&task.Status, &task.Priority, &task.Version, &task.ErrorMessage,
+		&task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("task not found: %s", taskID)

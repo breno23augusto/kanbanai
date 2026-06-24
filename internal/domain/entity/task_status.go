@@ -8,4 +8,5 @@ const (
 	StatusCompleted  Status = "completed"
 	StatusFailed     Status = "failed"
 	StatusCancelled  Status = "cancelled"
+	StatusPaused     Status = "paused"
 )

@@ -10,6 +10,7 @@ type Task struct {
 	Status       Status
 	Priority     int
 	Version      int
+	ErrorMessage string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

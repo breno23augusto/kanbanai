@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"kanbanai/config"
@@ -70,7 +71,13 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	container.Register("sseBroker", sseBroker)
 
 	// 6. Harness Adapter and Prompt Builder
-	promptBuilder := service.NewPromptBuilder()
+	apiHost := cfg.Server.Host
+	if apiHost == "" {
+		apiHost = "localhost"
+	}
+	apiBaseURL := fmt.Sprintf("http://%s:%d/api/v1", apiHost, cfg.Server.Port)
+
+	promptBuilder := service.NewPromptBuilder(apiBaseURL)
 	container.Register("promptBuilder", promptBuilder)
 
 	phaseConfigs := harness.BuildPhaseConfigs(
@@ -80,7 +87,7 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 		cfg.Harness.DefaultTimeoutSec,
 		convertPhaseOverrides(cfg.Harness.Phases),
 	)
-	harnessAdapter := harness.NewAdapter(phaseConfigs, fmt.Sprintf("%d", cfg.MCP.Port), dispatcher)
+	harnessAdapter := harness.NewAdapter(phaseConfigs, fmt.Sprintf("%d", cfg.MCP.Port), apiBaseURL, dispatcher)
 	container.Register("harnessAdapter", harnessAdapter)
 
 	// 7. Use Cases
@@ -160,10 +167,15 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 			slog.Error("bootstrap: no config for failed phase", "taskID", evt.TaskID, "phase", phase)
 			return
 		}
+		// Compose the reason from the process wait error + the captured harness
+		// stdout/stderr so HandleRetry can persist it on the task (SPEC §32.3).
+		waitErr, _ := payload["error"].(string)
+		output, _ := payload["output"].(string)
+		reason := buildHarnessReason(waitErr, output)
 		// Run in a detached goroutine: HandleRetry sleeps for backoff and the
 		// harness dispatch enforces its own per-attempt timeout.
 		go func() {
-			orchestrator.HandleRetry(context.Background(), evt.TaskID, phase, phaseCfg.MaxRetries)
+			orchestrator.HandleRetry(context.Background(), evt.TaskID, phase, phaseCfg.MaxRetries, reason)
 		}()
 	})
 
@@ -200,4 +212,19 @@ func convertPhaseOverrides(phases map[entity.Phase]config.PhaseHarnessConfig) ma
 		}
 	}
 	return result
+}
+
+// buildHarnessReason assembles the failure reason forwarded to HandleRetry from
+// the raw harness wait error and the captured stdout/stderr. The captured
+// output is the part that actually explains the failure.
+func buildHarnessReason(waitErr, output string) string {
+	var b strings.Builder
+	if waitErr = strings.TrimSpace(waitErr); waitErr != "" {
+		fmt.Fprintf(&b, "harness error: %s\n", waitErr)
+	}
+	if output = strings.TrimSpace(output); output != "" {
+		b.WriteString("--- harness output ---\n")
+		b.WriteString(output)
+	}
+	return strings.TrimSpace(b.String())
 }

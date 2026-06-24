@@ -16,6 +16,10 @@ A API REST do KanbanAI utiliza o prefixo `/api/v1/` e retorna payloads estrutura
 | `DELETE` | `/api/v1/tasks/:id` | **Path**: `id` | `204 No Content` | Remove task e mata harnesses ativos |
 | `GET`    | `/api/v1/tasks/:id/timeline` | **Path**: `id` | `200 OK` | Timeline de eventos da task |
 | `POST`   | `/api/v1/tasks/:id/retry` | **Path**: `id` | `200 OK` | Reinicia fase em estado `failed` |
+| `POST`   | `/api/v1/tasks/:id/pause` | **Path**: `id` | `200 OK` | Pausa o harness em execução e marca status `paused` |
+| `POST`   | `/api/v1/tasks/:id/resume` | **Path**: `id` | `200 OK` | Retoma a fase atual de uma task `paused` |
+| `POST`   | `/api/v1/tasks/:id/complete` | **Path**: `id`, **Body** (opcional): `{ "phase": string, "summary": string }` | `200 OK` | Marca a fase atual como concluída (bridge para harnesses não-MCP) |
+| `POST`   | `/api/v1/tasks/:id/reopen` | **Path**: `id`, **Body** (opcional): `{ "target_phase": string, "reason": string }` | `200 OK` | Move a task de volta a uma fase anterior (rework) e a re-despacha. Fallback HTTP do tool MCP `reopen_phase` (SPEC §6.3.7) |
 | `GET`    | `/api/v1/events` | - | `200 OK` (Stream) | Endpoint SSE para eventos em tempo real |
 
 ---
@@ -92,7 +96,35 @@ A API REST do KanbanAI utiliza o prefixo `/api/v1/` e retorna payloads estrutura
 }
 ```
 
-### 2.3 Erro Padronizado — `409 Conflict`
+### 2.3 POST `/api/v1/tasks/:id/reopen` — Reabrir Fase (Rework)
+
+Move a task de volta a uma fase **anterior** e a re-despacha. É o fallback HTTP
+do tool MCP `reopen_phase`, para harnesses sem client MCP (ex.: pi). A fase alvo
+precisa preceder a fase atual; para re-executar a **mesma** fase use `/retry`.
+
+**Request**:
+```json
+{ "target_phase": "doing", "reason": "checkWinner retorna undefined em empate; critério X não atendido" }
+```
+Se `target_phase` for omitido, reabre para a fase imediatamente anterior.
+
+**Response `200 OK`**:
+```json
+{
+  "success": true,
+  "data": {
+    "task_id": "01J...",
+    "target_phase": "doing",
+    "status": "reopened",
+    "message": "task moved back and target phase dispatched"
+  }
+}
+```
+
+Em caso de violação (fase alvo não-anterior, task inativa) retorna `400`/`409`.
+Publica o evento SSE `lane.reopened` (`{from, to, reason}`).
+
+### 2.4 Erro Padronizado — `409 Conflict`
 
 ```json
 {
@@ -136,6 +168,8 @@ data: {"task_id":"01J185V1WXP8B4K67R2C8V7Y8E","phase":"doing","message":"Escreve
    - `task.status_changed` → move card para nova coluna (`current_phase`)
    - `phase.*.progress` → exibe barra de progresso e log de atividades
    - `task.created` / `task.deleted` → insere/remove card instantaneamente
+   - `task.paused` / `task.resumed` → atualiza status do card (pausado/retomado)
+   - `lane.reopened` → task voltou a uma fase anterior para rework (atualiza coluna)
    - Em caso de desconexão, EventSource reconecta automaticamente e re-lista tasks
 
 ---

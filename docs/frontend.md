@@ -8,7 +8,8 @@
 | `KanbanLane`         | Coluna individual com header, contagem e cards             |
 | `TaskCard`           | Card com título, status, fase atual e indicador de progresso |
 | `CreateTaskDialog`   | Dialog MUI para criar nova task                            |
-| `TaskDetailDrawer`   | Drawer lateral com detalhes, outputs e timeline            |
+| `TaskDetailDrawer`   | Drawer lateral com detalhes, outputs, subtasks e timeline    |
+| `MarkdownView`        | Renderiza o output da fase como markdown GFM (headings, tabelas, code, listas de tarefas) |
 | `EventTimeline`      | Timeline vertical dos eventos da task                      |
 | `PhaseProgress`      | Stepper MUI mostrando progresso entre fases                |
 
@@ -35,6 +36,7 @@ frontend/
 │   │   ├── TaskCard.tsx                 # Card da task
 │   │   ├── CreateTaskDialog.tsx         # Modal de criação
 │   │   ├── TaskDetailDrawer.tsx         # Drawer de detalhes
+│   │   ├── MarkdownView.tsx             # Renderizador markdown (react-markdown + remark-gfm) dos outputs de fase, com checkboxes de subtask
 │   │   ├── EventTimeline.tsx            # Timeline de eventos
 │   │   └── PhaseProgress.tsx            # Progresso da fase
 │   ├── pages/

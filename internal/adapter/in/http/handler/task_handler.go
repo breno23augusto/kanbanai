@@ -139,6 +139,7 @@ func (h *TaskHandler) Get(c *gin.Context) {
 		Status:       result.Task.Status,
 		Priority:     result.Task.Priority,
 		Version:      result.Task.Version,
+		ErrorMessage: result.Task.ErrorMessage,
 		CreatedAt:    result.Task.CreatedAt,
 		UpdatedAt:    result.Task.UpdatedAt,
 	}
@@ -211,9 +212,47 @@ func (h *TaskHandler) Retry(c *gin.Context) {
 	})
 }
 
+// Pause stops the running harness for the task and marks it as paused. Only
+// valid for tasks currently in_progress. A paused task can be edited via the
+// regular PUT /tasks/:id endpoint and later resumed.
+func (h *TaskHandler) Pause(c *gin.Context) {
+	id := c.Param("id")
+
+	if err := h.orchestrator.PauseTask(c.Request.Context(), id); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.OK(c, gin.H{
+		"task_id": id,
+		"message": "task paused",
+	})
+}
+
+// Resume re-dispatches the current phase of a paused task, returning it to
+// in_progress. Only valid for tasks in the paused state.
+func (h *TaskHandler) Resume(c *gin.Context) {
+	id := c.Param("id")
+
+	if err := h.orchestrator.ResumeTask(c.Request.Context(), id); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.OK(c, gin.H{
+		"task_id": id,
+		"message": "task resumed",
+	})
+}
+
 type completePhaseRequest struct {
 	Phase   string `json:"phase"`
 	Summary string `json:"summary"`
+}
+
+type reopenPhaseRequest struct {
+	TargetPhase string `json:"target_phase"`
+	Reason      string `json:"reason"`
 }
 
 // CompletePhase bridges non-MCP harnesses (e.g. pi, which has no MCP support)
@@ -254,4 +293,52 @@ func (h *TaskHandler) CompletePhase(c *gin.Context) {
 	}
 
 	response.OK(c, gin.H{"task_id": id, "phase": phase, "status": "completed"})
+}
+
+// Reopen moves the task BACK to an earlier phase (e.g. from validating back
+// to doing) and re-dispatches it, so problems found during validation get
+// reworked instead of carried forward (SPEC §6.3.7). This is the HTTP fallback
+// for harnesses that have no MCP client (e.g. pi): after a validation run
+// detects failures, the harness wrapper POSTs here to send the task back to
+// doing and trigger a fresh Doing dispatch. The body may omit target_phase, in
+// which case the phase immediately preceding the current one is used.
+func (h *TaskHandler) Reopen(c *gin.Context) {
+	id := c.Param("id")
+
+	var req reopenPhaseRequest
+	_ = c.ShouldBindJSON(&req)
+
+	ctx := c.Request.Context()
+
+	result, err := h.getTaskUC.Execute(ctx, id)
+	if err != nil {
+		response.NotFound(c, "task not found")
+		return
+	}
+	if result.Task.Status != entity.StatusInProgress && result.Task.Status != entity.StatusPending {
+		response.Conflict(c, fmt.Sprintf("task is not active (status=%s)", result.Task.Status))
+		return
+	}
+
+	target := entity.Phase(req.TargetPhase)
+	if target == "" {
+		prev, ok := result.Task.CurrentPhase.Prev()
+		if !ok {
+			response.BadRequest(c, fmt.Sprintf("no previous phase to reopen from %s", result.Task.CurrentPhase))
+			return
+		}
+		target = prev
+	}
+
+	if err := h.orchestrator.ReopenPhase(ctx, id, target, req.Reason); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.OK(c, gin.H{
+		"task_id":       id,
+		"target_phase":  string(target),
+		"status":        "reopened",
+		"message":       "task moved back and target phase dispatched",
+	})
 }

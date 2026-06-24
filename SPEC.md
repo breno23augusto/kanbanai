@@ -443,6 +443,44 @@ func (o *PhaseOrchestrator) HandleRetry(ctx context.Context, taskID string, phas
 }
 ```
 
+#### 6.3.7 ReopenPhase — Reabertura para Rework
+
+Quando uma fase downstream (tipicamente **Validating**) detecta problemas que
+exigem retrabalho em uma fase **anterior**, ela **não** deve chamar
+`complete_phase` e empurrar a falha para frente. Em vez disso, reabre a lane:
+
+```go
+func (o *PhaseOrchestrator) ReopenPhase(ctx context.Context, taskID string,
+    targetPhase entity.Phase, reason string) error {
+    task, err := o.taskRepo.Find(ctx, taskID)
+    // ... guards: task ativa; targetPhase não-terminal e anterior à atual ...
+    from := task.CurrentPhase
+    o.retryUpdate(ctx, taskID, func(t *entity.Task) {
+        t.CurrentPhase = targetPhase
+        t.Status = entity.StatusPending
+        t.ErrorMessage = ""
+    })
+    o.resetAttempts(taskID)
+    o.dispatcher.Publish(event.Event{Type: event.LaneReopened, TaskID: taskID,
+        Payload: map[string]any{"from": from, "to": targetPhase, "reason": reason}})
+    return o.dispatchPhase(ctx, task, targetPhase)
+}
+```
+
+**Exposição:**
+
+- **MCP**: tool `reopen_phase` (`task_id`, `phase`=fase atual do harness,
+  `target_phase`, `reason`). O `authorize` valida contra a fase atual.
+- **HTTP (fallback para harnesses sem MCP, ex.: pi)**:
+  `POST /api/v1/tasks/:id/reopen` com body `{ "target_phase": "doing",
+  "reason": "..." }`. A base URL é injetada no processo harness via env
+  `KANBANAI_API_BASE_URL`.
+
+**Prompt:** todo prompt de fase que pode detectar falha (doing, validating,
+testing) recebe um **Failure-Handling Contract** mandatório com a regra de
+decisão (complete só em aprovação real; reopen para qualquer falha) e o caminho
+HTTP fallback com a URL e `task_id` concretos. Ver `docs/rules.md` §6.
+
 ---
 
 ## 7. Estrutura de Diretórios
