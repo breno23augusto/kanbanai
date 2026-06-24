@@ -5,5 +5,6 @@ import (
 )
 
 func New() string {
-	return uuid.NewV7().String()
+	id, _ := uuid.NewV7()
+	return id.String()
 }

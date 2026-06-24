@@ -29,6 +29,9 @@ func completePhaseToolDef() *mcp.Tool {
 
 func completePhaseHandler(container *di.Container) mcp.ToolHandlerFor[completePhaseArgs, any] {
 	return func(ctx context.Context, request *mcp.CallToolRequest, args completePhaseArgs) (*mcp.CallToolResult, any, error) {
+		if err := authorize(ctx, container, args.TaskID, args.Phase); err != nil {
+			return nil, nil, err
+		}
 		advancePhase := container.MustResolve("advancePhaseUseCase").(*usecase.AdvancePhase)
 		err := advancePhase.Execute(ctx, args.TaskID, entity.Phase(args.Phase), args.Summary)
 		return nil, map[string]any{"status": "completed"}, err

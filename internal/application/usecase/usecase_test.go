@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"kanbanai/internal/domain/entity"
 	"kanbanai/internal/domain/event"
@@ -35,7 +36,7 @@ func (r *fakeTaskRepo) Update(ctx context.Context, task *entity.Task) error {
 	defer r.mu.Unlock()
 	existing, ok := r.tasks[task.ID]
 	if !ok || existing.Version != task.Version {
-		return fmt.Errorf("concurrent modification: version mismatch")
+		return fmt.Errorf("%w", repository.ErrConcurrentModification)
 	}
 	task.Version++
 	r.tasks[task.ID] = task
@@ -220,9 +221,127 @@ func TestAdvancePhaseMarksPhaseCompleted(t *testing.T) {
 		t.Errorf("event type = %s, want phase.planning.completed", events[0].Type)
 	}
 
-	// Task should NOT be marked as completed (only the phase is done)
+	// Task is marked completed when a phase completes (SPEC §32.2). The
+	// orchestrator later resets it to pending when advancing to the next lane.
 	updated := repo.tasks["t1"]
-	if updated.Status == entity.StatusCompleted {
-		t.Error("task should not be marked completed when a phase completes")
+	if updated.Status != entity.StatusCompleted {
+		t.Errorf("task status = %s, want completed", updated.Status)
+	}
+}
+// flakyTaskRepo wraps fakeTaskRepo and fails the first failCount Updates with
+// ErrConcurrentModification to simulate an optimistic locking race.
+type flakyTaskRepo struct {
+	*fakeTaskRepo
+	failCount int
+}
+
+func (r *flakyTaskRepo) Update(ctx context.Context, task *entity.Task) error {
+	if r.failCount > 0 {
+		r.failCount--
+		return fmt.Errorf("%w", repository.ErrConcurrentModification)
+	}
+	return r.fakeTaskRepo.Update(ctx, task)
+}
+
+func TestAdvancePhasePersistsPhaseOutputSummary(t *testing.T) {
+	repo := newFakeTaskRepo()
+	disp := &recordingDispatcher{}
+	phaseOutputRepo := newFakePhaseOutputRepo()
+
+	task := &entity.Task{ID: "t1", Title: "Task", CurrentPhase: entity.PhaseDoing, Status: entity.StatusInProgress, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	repo.tasks["t1"] = task
+
+	uc := NewAdvancePhase(repo, phaseOutputRepo, disp)
+	if err := uc.Execute(context.Background(), "t1", entity.PhaseDoing, "implemented feature X"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(phaseOutputRepo.outputs) != 1 {
+		t.Fatalf("expected 1 phase output, got %d", len(phaseOutputRepo.outputs))
+	}
+	var po *entity.PhaseOutput
+	for _, o := range phaseOutputRepo.outputs {
+		po = o
+	}
+	if po.Summary != "implemented feature X" {
+		t.Errorf("summary = %q, want implemented feature X", po.Summary)
+	}
+	if po.Phase != entity.PhaseDoing {
+		t.Errorf("phase = %s, want doing", po.Phase)
+	}
+}
+
+func TestAdvancePhasePreservesExistingOutput(t *testing.T) {
+	repo := newFakeTaskRepo()
+	disp := &recordingDispatcher{}
+	phaseOutputRepo := newFakePhaseOutputRepo()
+
+	existing := &entity.PhaseOutput{ID: "po1", TaskID: "t1", Phase: entity.PhaseDoing, Output: "raw code diff", Summary: "old", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	phaseOutputRepo.outputs["po1"] = existing
+
+	task := &entity.Task{ID: "t1", Title: "Task", CurrentPhase: entity.PhaseDoing, Status: entity.StatusInProgress, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	repo.tasks["t1"] = task
+
+	uc := NewAdvancePhase(repo, phaseOutputRepo, disp)
+	if err := uc.Execute(context.Background(), "t1", entity.PhaseDoing, "new summary"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	po := phaseOutputRepo.outputs["po1"]
+	if po.Output != "raw code diff" {
+		t.Errorf("output clobbered = %q, want raw code diff", po.Output)
+	}
+	if po.Summary != "new summary" {
+		t.Errorf("summary = %q, want new summary", po.Summary)
+	}
+}
+
+func TestAdvancePhaseRetriesOnConcurrentModification(t *testing.T) {
+	repo := &flakyTaskRepo{fakeTaskRepo: newFakeTaskRepo(), failCount: 1}
+	disp := &recordingDispatcher{}
+	phaseOutputRepo := newFakePhaseOutputRepo()
+
+	task := &entity.Task{ID: "t1", Title: "Task", CurrentPhase: entity.PhasePlanning, Status: entity.StatusInProgress, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	repo.tasks["t1"] = task
+
+	uc := NewAdvancePhase(repo, phaseOutputRepo, disp)
+	if err := uc.Execute(context.Background(), "t1", entity.PhasePlanning, "done"); err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if repo.tasks["t1"].Status != entity.StatusCompleted {
+		t.Errorf("status = %s, want completed", repo.tasks["t1"].Status)
+	}
+}
+
+func TestUpdateTaskRetriesOnConcurrentModification(t *testing.T) {
+	repo := &flakyTaskRepo{fakeTaskRepo: newFakeTaskRepo(), failCount: 1}
+	disp := &recordingDispatcher{}
+
+	task := &entity.Task{ID: "t1", Title: "Old", Description: "d", CurrentPhase: entity.PhasePlanning, Status: entity.StatusPending, Version: 1, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	repo.tasks["t1"] = task
+
+	uc := NewUpdateTask(repo, disp)
+	result, err := uc.Execute(context.Background(), "t1", dto.CreateTaskInput{Title: "New", Description: "d2", Priority: 5}, 1)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if result.Title != "New" {
+		t.Errorf("title = %s, want New", result.Title)
+	}
+	if result.Priority != 5 {
+		t.Errorf("priority = %d, want 5", result.Priority)
+	}
+}
+
+func TestUpdateTaskClientVersionMismatchReturns409Error(t *testing.T) {
+	repo := newFakeTaskRepo()
+	disp := &recordingDispatcher{}
+	task := &entity.Task{ID: "t1", Title: "Old", CurrentPhase: entity.PhasePlanning, Status: entity.StatusPending, Version: 3, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	repo.tasks["t1"] = task
+
+	uc := NewUpdateTask(repo, disp)
+	_, err := uc.Execute(context.Background(), "t1", dto.CreateTaskInput{Title: "New"}, 1)
+	if !errors.Is(err, repository.ErrConcurrentModification) {
+		t.Errorf("expected ErrConcurrentModification, got %v", err)
 	}
 }

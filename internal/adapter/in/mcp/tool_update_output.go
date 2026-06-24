@@ -32,6 +32,9 @@ func updateTaskOutputToolDef() *mcp.Tool {
 
 func updateTaskOutputHandler(container *di.Container) mcp.ToolHandlerFor[updateTaskOutputArgs, any] {
 	return func(ctx context.Context, request *mcp.CallToolRequest, args updateTaskOutputArgs) (*mcp.CallToolResult, any, error) {
+		if err := authorize(ctx, container, args.TaskID, args.Phase); err != nil {
+			return nil, nil, err
+		}
 		savePhaseOutput := container.MustResolve("savePhaseOutputUseCase").(*usecase.SavePhaseOutput)
 		input := dto.SavePhaseOutputInput{
 			TaskID:  args.TaskID,

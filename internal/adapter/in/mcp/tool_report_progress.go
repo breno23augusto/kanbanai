@@ -29,6 +29,9 @@ func reportProgressToolDef() *mcp.Tool {
 
 func reportProgressHandler(container *di.Container) mcp.ToolHandlerFor[reportProgressArgs, any] {
 	return func(ctx context.Context, request *mcp.CallToolRequest, args reportProgressArgs) (*mcp.CallToolResult, any, error) {
+		if err := authorize(ctx, container, args.TaskID, args.Phase); err != nil {
+			return nil, nil, err
+		}
 		reportProgress := container.MustResolve("reportProgressUseCase").(*usecase.ReportPhaseProgress)
 		err := reportProgress.Execute(ctx, args.TaskID, entity.Phase(args.Phase), args.Message)
 		return nil, map[string]any{"status": "ok"}, err

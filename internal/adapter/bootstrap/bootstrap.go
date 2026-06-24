@@ -3,10 +3,12 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
+	"time"
+
 	"kanbanai/config"
-	"kanbanai/internal/di"
-	"kanbanai/internal/domain/event"
-	"kanbanai/internal/domain/entity"
+	"kanbanai/internal/adapter/in/http/handler"
 	eventimpl "kanbanai/internal/adapter/out/event"
 	"kanbanai/internal/adapter/out/harness"
 	"kanbanai/internal/adapter/out/persistence/query"
@@ -15,10 +17,9 @@ import (
 	"kanbanai/internal/adapter/out/sse"
 	"kanbanai/internal/application/service"
 	"kanbanai/internal/application/usecase"
-	"kanbanai/internal/adapter/in/http/handler"
-	"log/slog"
-	"os"
-	"time"
+	"kanbanai/internal/di"
+	"kanbanai/internal/domain/entity"
+	"kanbanai/internal/domain/event"
 )
 
 func Initialize(cfg *config.Config) (*di.Container, error) {
@@ -72,14 +73,14 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	promptBuilder := service.NewPromptBuilder()
 	container.Register("promptBuilder", promptBuilder)
 
-	harnessConfigs := harness.BuildPhaseConfigs(
+	phaseConfigs := harness.BuildPhaseConfigs(
 		cfg.Harness.DefaultCmd,
 		cfg.Harness.DefaultModel,
 		cfg.Harness.DefaultMaxRetries,
 		cfg.Harness.DefaultTimeoutSec,
 		convertPhaseOverrides(cfg.Harness.Phases),
 	)
-	harnessAdapter := harness.NewAdapter(harnessConfigs, fmt.Sprintf("%d", cfg.MCP.Port), dispatcher)
+	harnessAdapter := harness.NewAdapter(phaseConfigs, fmt.Sprintf("%d", cfg.MCP.Port), dispatcher)
 	container.Register("harnessAdapter", harnessAdapter)
 
 	// 7. Use Cases
@@ -101,24 +102,25 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	container.Register("reportProgressUseCase", reportProgressUC)
 	container.Register("savePhaseOutputUseCase", savePhaseOutputUC)
 
-	// 8. HTTP Handlers
-	healthHandler := handler.NewHealthHandler()
+	// 8. Phase Orchestrator (created before handlers so they can depend on it)
+	orchestrator := service.NewPhaseOrchestrator(
+		taskRepo, phaseOutputRepo, harnessAdapter, promptBuilder, dispatcher,
+	)
+	container.Register("orchestrator", orchestrator)
+
+	// 9. HTTP Handlers
+	healthHandler := handler.NewHealthHandler(db)
 	sseHandler := handler.NewSSEHandler(sseBroker)
 	taskHandler := handler.NewTaskHandler(
 		createTaskUC, updateTaskUC, deleteTaskUC,
 		getTaskUC, listTasksUC, advancePhaseUC,
+		orchestrator,
 		taskTimelineQuery,
 	)
 
 	container.Register("healthHandler", healthHandler)
 	container.Register("sseHandler", sseHandler)
 	container.Register("taskHandler", taskHandler)
-
-	// 9. Phase Orchestrator
-	orchestrator := service.NewPhaseOrchestrator(
-		taskRepo, phaseOutputRepo, harnessAdapter, promptBuilder, dispatcher,
-	)
-	container.Register("orchestrator", orchestrator)
 
 	// 10. Event subscriptions (Observer pattern wiring)
 	dispatcher.Subscribe(event.TaskCreated, func(evt event.Event) {
@@ -138,7 +140,34 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 		orchestrator.KillProcess(evt.TaskID)
 	})
 
-	// Subscribe to all phase completed events
+	// On harness failure (non-zero exit or timeout), drive the retry policy.
+	// The orchestrator tracks attempts per task/phase and either re-dispatches
+	// the phase or marks the task as failed (SPEC §13.2 / §32.3).
+	dispatcher.Subscribe(event.HarnessErrorOccurred, func(evt event.Event) {
+		payload, _ := evt.Payload.(map[string]any)
+		phaseVal, ok := payload["phase"]
+		if !ok {
+			slog.Error("bootstrap: harness error without phase", "taskID", evt.TaskID)
+			return
+		}
+		phase, ok := phaseVal.(entity.Phase)
+		if !ok {
+			slog.Error("bootstrap: harness error phase type assertion failed", "taskID", evt.TaskID)
+			return
+		}
+		phaseCfg, ok := phaseConfigs[phase]
+		if !ok {
+			slog.Error("bootstrap: no config for failed phase", "taskID", evt.TaskID, "phase", phase)
+			return
+		}
+		// Run in a detached goroutine: HandleRetry sleeps for backoff and the
+		// harness dispatch enforces its own per-attempt timeout.
+		go func() {
+			orchestrator.HandleRetry(context.Background(), evt.TaskID, phase, phaseCfg.MaxRetries)
+		}()
+	})
+
+	// Subscribe to all phase completed events -> advance to the next lane.
 	phaseCompletedEvents := []event.EventType{
 		event.PhasePlanningCompleted,
 		event.PhaseTodoCompleted,

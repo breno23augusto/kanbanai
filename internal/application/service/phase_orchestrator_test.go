@@ -276,3 +276,46 @@ func TestOrchestratorKillProcess(t *testing.T) {
 	}
 	harness.mu.Unlock()
 }
+func TestOrchestratorRestartPhaseRedpatchesAndResetsAttempts(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	disp := &recordingDisp{}
+	pb := NewPromptBuilder()
+
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
+
+	task := &entity.Task{
+		ID:           "t1",
+		Title:        "Test",
+		CurrentPhase: entity.PhaseDoing,
+		Status:       entity.StatusFailed,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	repo.tasks["t1"] = task
+
+	if err := orch.RestartPhase(context.Background(), "t1"); err != nil {
+		t.Fatalf("RestartPhase error: %v", err)
+	}
+
+	// Status should move back to in_progress and the current phase re-dispatched.
+	updated := repo.tasks["t1"]
+	if updated.Status != entity.StatusInProgress {
+		t.Errorf("status = %s, want in_progress", updated.Status)
+	}
+
+	harness.mu.Lock()
+	if len(harness.dispatchedPhases) != 1 || harness.dispatchedPhases[0] != entity.PhaseDoing {
+		t.Errorf("expected doing re-dispatch, got %v", harness.dispatchedPhases)
+	}
+	harness.mu.Unlock()
+
+	// Retry counter should be reset to 0 (a subsequent failure starts at attempt 1).
+	orch.HandleRetry(context.Background(), "t1", entity.PhaseDoing, 0)
+	orch.mu.Lock()
+	if orch.retryAttempts["t1"] != 1 {
+		t.Errorf("retryAttempts = %d, want 1 after reset + one failure", orch.retryAttempts["t1"])
+	}
+	orch.mu.Unlock()
+}

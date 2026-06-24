@@ -50,7 +50,7 @@ func (r *TaskRepositorySQLite) Update(ctx context.Context, task *entity.Task) er
 		return fmt.Errorf("rows affected: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("concurrent modification: version mismatch for task %s", task.ID)
+		return fmt.Errorf("%w for task %s", repository.ErrConcurrentModification, task.ID)
 	}
 
 	task.Version++

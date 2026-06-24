@@ -24,6 +24,9 @@ func getTaskToolDef() *mcp.Tool {
 
 func getTaskHandler(container *di.Container) mcp.ToolHandlerFor[getTaskArgs, any] {
 	return func(ctx context.Context, request *mcp.CallToolRequest, args getTaskArgs) (*mcp.CallToolResult, any, error) {
+		if err := validateTaskID(args.TaskID); err != nil {
+			return nil, nil, err
+		}
 		getTask := container.MustResolve("getTaskUseCase").(*usecase.GetTask)
 		result, err := getTask.Execute(ctx, args.TaskID)
 		return nil, result, err

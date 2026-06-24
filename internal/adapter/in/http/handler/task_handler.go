@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"errors"
+	"kanbanai/internal/adapter/in/http/response"
 	"kanbanai/internal/application/dto"
 	"kanbanai/internal/application/usecase"
 	"kanbanai/internal/domain/entity"
-	"kanbanai/internal/adapter/in/http/response"
+	"kanbanai/internal/domain/port"
 	"kanbanai/internal/domain/query"
+	"kanbanai/internal/domain/repository"
 
 	"github.com/gin-gonic/gin"
 )
@@ -17,6 +20,7 @@ type TaskHandler struct {
 	getTaskUC      *usecase.GetTask
 	listTasksUC    *usecase.ListTasks
 	advancePhaseUC *usecase.AdvancePhase
+	orchestrator   port.PhaseOrchestratorPort
 	timelineQuery  query.TaskTimelineQuery
 }
 
@@ -27,6 +31,7 @@ func NewTaskHandler(
 	getTaskUC *usecase.GetTask,
 	listTasksUC *usecase.ListTasks,
 	advancePhaseUC *usecase.AdvancePhase,
+	orchestrator port.PhaseOrchestratorPort,
 	timelineQuery query.TaskTimelineQuery,
 ) *TaskHandler {
 	return &TaskHandler{
@@ -36,6 +41,7 @@ func NewTaskHandler(
 		getTaskUC:      getTaskUC,
 		listTasksUC:    listTasksUC,
 		advancePhaseUC: advancePhaseUC,
+		orchestrator:   orchestrator,
 		timelineQuery:  timelineQuery,
 	}
 }
@@ -92,7 +98,7 @@ func (h *TaskHandler) Update(c *gin.Context) {
 
 	result, err := h.updateTaskUC.Execute(c.Request.Context(), id, input, req.Version)
 	if err != nil {
-		if err.Error() == "concurrent modification: version mismatch" {
+		if errors.Is(err, repository.ErrConcurrentModification) {
 			response.Conflict(c, "The task version has changed. Please reload the data and try again.")
 			return
 		}
@@ -123,7 +129,6 @@ func (h *TaskHandler) Get(c *gin.Context) {
 		return
 	}
 
-	// Build response with task + phase outputs
 	taskOutput := dto.TaskOutput{
 		ID:           result.Task.ID,
 		Title:        result.Task.Title,
@@ -188,11 +193,16 @@ func (h *TaskHandler) GetTimeline(c *gin.Context) {
 	response.OK(c, result)
 }
 
+// Retry restarts the flow for the task's current phase, resetting the retry
+// counter. Used to unstick tasks in a failed state (SPEC §16.1 / §32.3).
 func (h *TaskHandler) Retry(c *gin.Context) {
 	id := c.Param("id")
 
-	// For now, just acknowledge the retry request
-	// The actual retry logic is handled by the orchestrator
+	if err := h.orchestrator.RestartPhase(c.Request.Context(), id); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
 	response.OK(c, gin.H{
 		"task_id": id,
 		"message": "retry initiated",
