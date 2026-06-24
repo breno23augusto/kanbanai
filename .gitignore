@@ -19,6 +19,9 @@ frontend/node_modules/
 frontend/dist/
 web/
 
+# pi harness workspace (artifacts produced by the agent)
+workspace/
+
 # IDE
 .idea/
 .vscode/
