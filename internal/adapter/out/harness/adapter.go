@@ -82,13 +82,15 @@ func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.
 		Timestamp: time.Now(),
 	})
 
-	// Enforce the per-phase timeout from configuration rather than relying on
-	// the caller's context deadline (SPEC §13.2 / §32.3).
+	// Enforce the per-phase timeout from configuration. The harness process
+	// outlives the request/subscriber that triggered the dispatch, so the
+	// deadline is derived from the background context — only TimeoutSec and an
+	// explicit KillProcess terminate it (SPEC §13.2 / §32.3).
 	timeout := time.Duration(config.TimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, cancel := context.WithTimeout(context.Background(), timeout)
 
 	cmd, err := a.builder.Build(runCtx, config.HarnessCmd, config.ModelName, task.ID, prompt)
 	if err != nil {

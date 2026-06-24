@@ -2,6 +2,8 @@ package handler
 
 import (
 	"errors"
+	"fmt"
+
 	"kanbanai/internal/adapter/in/http/response"
 	"kanbanai/internal/application/dto"
 	"kanbanai/internal/application/usecase"
@@ -207,4 +209,49 @@ func (h *TaskHandler) Retry(c *gin.Context) {
 		"task_id": id,
 		"message": "retry initiated",
 	})
+}
+
+type completePhaseRequest struct {
+	Phase   string `json:"phase"`
+	Summary string `json:"summary"`
+}
+
+// CompletePhase bridges non-MCP harnesses (e.g. pi, which has no MCP support)
+// into the phase-advancement flow. A harness wrapper, after finishing its work,
+// POSTs here to mark the task's current phase completed. This invokes the same
+// AdvancePhase use case the complete_phase MCP tool uses, so the orchestrator
+// reacts via the phase.<phase>.completed event and advances the lane.
+func (h *TaskHandler) CompletePhase(c *gin.Context) {
+	id := c.Param("id")
+
+	var req completePhaseRequest
+	_ = c.ShouldBindJSON(&req) // body optional; phase defaults to current
+
+	ctx := c.Request.Context()
+
+	result, err := h.getTaskUC.Execute(ctx, id)
+	if err != nil {
+		response.NotFound(c, "task not found")
+		return
+	}
+
+	phase := entity.Phase(req.Phase)
+	if phase == "" {
+		phase = result.Task.CurrentPhase
+	}
+	if phase != result.Task.CurrentPhase {
+		response.BadRequest(c, fmt.Sprintf("phase %s is not the current phase (current: %s)", phase, result.Task.CurrentPhase))
+		return
+	}
+	if result.Task.Status != entity.StatusInProgress && result.Task.Status != entity.StatusPending {
+		response.Conflict(c, fmt.Sprintf("task is not active (status=%s)", result.Task.Status))
+		return
+	}
+
+	if err := h.advancePhaseUC.Execute(ctx, id, phase, req.Summary); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.OK(c, gin.H{"task_id": id, "phase": phase, "status": "completed"})
 }
