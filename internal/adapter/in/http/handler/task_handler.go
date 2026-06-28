@@ -16,14 +16,17 @@ import (
 )
 
 type TaskHandler struct {
-	createTaskUC   *usecase.CreateTask
-	updateTaskUC   *usecase.UpdateTask
-	deleteTaskUC   *usecase.DeleteTask
-	getTaskUC      *usecase.GetTask
-	listTasksUC    *usecase.ListTasks
-	advancePhaseUC *usecase.AdvancePhase
-	orchestrator   port.PhaseOrchestratorPort
-	timelineQuery  query.TaskTimelineQuery
+	createTaskUC         *usecase.CreateTask
+	updateTaskUC         *usecase.UpdateTask
+	deleteTaskUC         *usecase.DeleteTask
+	getTaskUC            *usecase.GetTask
+	listTasksUC          *usecase.ListTasks
+	advancePhaseUC       *usecase.AdvancePhase
+	createSubtasksUC     *usecase.CreateSubtasks
+	updateSubtaskStatusUC *usecase.UpdateSubtaskStatus
+	savePhaseOutputUC    *usecase.SavePhaseOutput
+	orchestrator        port.PhaseOrchestratorPort
+	timelineQuery        query.TaskTimelineQuery
 }
 
 func NewTaskHandler(
@@ -33,18 +36,24 @@ func NewTaskHandler(
 	getTaskUC *usecase.GetTask,
 	listTasksUC *usecase.ListTasks,
 	advancePhaseUC *usecase.AdvancePhase,
+	createSubtasksUC *usecase.CreateSubtasks,
+	updateSubtaskStatusUC *usecase.UpdateSubtaskStatus,
+	savePhaseOutputUC *usecase.SavePhaseOutput,
 	orchestrator port.PhaseOrchestratorPort,
 	timelineQuery query.TaskTimelineQuery,
 ) *TaskHandler {
 	return &TaskHandler{
-		createTaskUC:   createTaskUC,
-		updateTaskUC:   updateTaskUC,
-		deleteTaskUC:   deleteTaskUC,
-		getTaskUC:      getTaskUC,
-		listTasksUC:    listTasksUC,
-		advancePhaseUC: advancePhaseUC,
-		orchestrator:   orchestrator,
-		timelineQuery:  timelineQuery,
+		createTaskUC:         createTaskUC,
+		updateTaskUC:         updateTaskUC,
+		deleteTaskUC:         deleteTaskUC,
+		getTaskUC:            getTaskUC,
+		listTasksUC:          listTasksUC,
+		advancePhaseUC:       advancePhaseUC,
+		createSubtasksUC:     createSubtasksUC,
+		updateSubtaskStatusUC: updateSubtaskStatusUC,
+		savePhaseOutputUC:    savePhaseOutputUC,
+		orchestrator:         orchestrator,
+		timelineQuery:        timelineQuery,
 	}
 }
 
@@ -358,4 +367,84 @@ func (h *TaskHandler) Reopen(c *gin.Context) {
 		"status":        "reopened",
 		"message":       "task moved back and target phase dispatched",
 	})
+}
+
+// CreateSubtasks replaces the task's subtask checklist (planning phase). Mirrors
+// the create_subtasks MCP tool so non-MCP harnesses (pi) can persist the
+// breakdown they produce via REST. Existing subtasks are deleted first.
+func (h *TaskHandler) CreateSubtasks(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		Subtasks []dto.SubtaskInput `json:"subtasks" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	result, err := h.createSubtasksUC.Execute(c.Request.Context(), id, req.Subtasks)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.OK(c, gin.H{"task_id": id, "subtasks": result})
+}
+
+// UpdateSubtaskStatus advances a single subtask's status (doing phase). Mirrors
+// the update_subtask_status MCP tool over REST for non-MCP harnesses.
+func (h *TaskHandler) UpdateSubtaskStatus(c *gin.Context) {
+	id := c.Param("id")
+	sid := c.Param("sid")
+
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	status := entity.SubtaskStatus(req.Status)
+	if err := status.Validate(); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	result, err := h.updateSubtaskStatusUC.Execute(c.Request.Context(), id, sid, status)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.OK(c, result)
+}
+
+// SavePhaseOutput stores raw artifacts/summary for a phase. Mirrors the
+// update_task_output MCP tool over REST so non-MCP harnesses can persist the
+// full phase output (not just a truncated completion summary).
+func (h *TaskHandler) SavePhaseOutput(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		Phase   string `json:"phase" binding:"required"`
+		Output  string `json:"output"`
+		Summary string `json:"summary"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	input := dto.SavePhaseOutputInput{
+		TaskID:  id,
+		Phase:   entity.Phase(req.Phase),
+		Output:  req.Output,
+		Summary: req.Summary,
+	}
+	result, err := h.savePhaseOutputUC.Execute(c.Request.Context(), input)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.OK(c, result)
 }

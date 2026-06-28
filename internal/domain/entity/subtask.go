@@ -1,6 +1,9 @@
 package entity
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // SubtaskStatus is the lifecycle state of a single subtask within a task. The
 // planning phase creates subtasks (pending); the doing/validating/testing
@@ -23,6 +26,16 @@ func (s SubtaskStatus) IsActive() bool {
 // IsFinished reports whether the subtask is done.
 func (s SubtaskStatus) IsFinished() bool {
 	return s == SubtaskCompleted
+}
+
+// Validate returns an error if s is not one of the recognized statuses.
+func (s SubtaskStatus) Validate() error {
+	switch s {
+	case SubtaskPending, SubtaskInProgress, SubtaskCompleted:
+		return nil
+	default:
+		return fmt.Errorf("invalid subtask status %q (want pending|in_progress|completed)", s)
+	}
 }
 
 // Subtask is a discrete unit of work identified during the planning phase and

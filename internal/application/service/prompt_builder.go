@@ -208,8 +208,8 @@ criteria are fully met. When you detect that an EARLIER phase produced work
 that is incorrect or incomplete, you MUST send the task back to that phase for
 rework — never call complete_phase to push a known failure forward.
 
-1) SENDING THE TASK BACK (preferred — use MCP tools)
-   Call the "reopen_phase" MCP tool with:
+1) SENDING THE TASK BACK (preferred — use the tools)
+   Call the "reopen_phase" tool with:
      - task_id: "%TASK_ID%"
      - phase: "%CURRENT_PHASE%"          (your current phase)
      - target_phase: "%PREV_PHASE%"       (the earlier phase to reopen, e.g. "doing")
@@ -219,19 +219,19 @@ rework — never call complete_phase to push a known failure forward.
    The orchestrator guarantees target_phase precedes your current phase; if you
    need a different earlier phase, name it explicitly (e.g. "todo", "planning").
 
-2) HTTP FALLBACK (use this ONLY if your harness has no MCP client, e.g. pi)
+2) HTTP FALLBACK (use this ONLY if the tools above are genuinely unavailable to you)
    Send an HTTP POST to the KanbanAI REST API (no MCP SDK required):
      POST %API_BASE_URL%/tasks/%TASK_ID%/reopen
      Content-Type: application/json
      { "target_phase": "%PREV_PHASE%", "reason": "<precise list of problems>" }
    The API base URL is also available in the KANBANAI_API_BASE_URL env var.
    This endpoint performs the exact same lane rollback + re-dispatch as the
-   reopen_phase MCP tool, and likewise reports completion (when criteria ARE
+   reopen_phase tool, and likewise reports completion (when criteria ARE
    met) via POST %API_BASE_URL%/tasks/%TASK_ID%/complete.
 
 3) WHEN CRITERIA ARE MET
-   Save your artifacts with update_task_output (MCP) or just proceed, then call
-   complete_phase (MCP) or POST %API_BASE_URL%/tasks/%TASK_ID%/complete.
+   Save your artifacts with the update_task_output tool, then call complete_phase
+   to advance (or POST %API_BASE_URL%/tasks/%TASK_ID%/complete as a fallback).
    Use complete ONLY for a genuine pass; use reopen for any failure.
 `
 	repl := func(old, new string) { s = strings.ReplaceAll(s, old, new) }

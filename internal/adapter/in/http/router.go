@@ -35,6 +35,9 @@ func SetupRoutes(r *gin.Engine, container *di.Container, webDir string) {
 		api.POST("/tasks/:id/resume", taskHandler.Resume)
 		api.POST("/tasks/:id/complete", taskHandler.CompletePhase)
 		api.POST("/tasks/:id/reopen", taskHandler.Reopen)
+		api.POST("/tasks/:id/subtasks", taskHandler.CreateSubtasks)
+		api.PATCH("/tasks/:id/subtasks/:sid", taskHandler.UpdateSubtaskStatus)
+		api.PUT("/tasks/:id/output", taskHandler.SavePhaseOutput)
 
 		sseHandler := container.MustResolve("sseHandler").(*handler.SSEHandler)
 		api.GET("/events", sseHandler.Stream)

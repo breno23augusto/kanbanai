@@ -127,6 +127,7 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	taskHandler := handler.NewTaskHandler(
 		createTaskUC, updateTaskUC, deleteTaskUC,
 		getTaskUC, listTasksUC, advancePhaseUC,
+		createSubtasksUC, updateSubtaskStatusUC, savePhaseOutputUC,
 		orchestrator,
 		taskTimelineQuery,
 	)

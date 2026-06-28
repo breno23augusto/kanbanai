@@ -16,10 +16,11 @@ func NewCommandBuilder(mcpPort, apiBaseURL string) *CommandBuilder {
 	return &CommandBuilder{mcpPort: mcpPort, apiBaseURL: apiBaseURL}
 }
 
-func (b *CommandBuilder) Build(ctx context.Context, harnessCmd string, modelName string, taskID string, prompt string) (*exec.Cmd, error) {
+func (b *CommandBuilder) Build(ctx context.Context, harnessCmd string, modelName string, taskID string, phase string, prompt string) (*exec.Cmd, error) {
 	cmd := exec.CommandContext(ctx, harnessCmd, "--model", modelName, "--prompt", prompt)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("KANBANAI_TASK_ID=%s", taskID),
+		fmt.Sprintf("KANBANAI_PHASE=%s", phase),
 		fmt.Sprintf("KANBANAI_MCP_PORT=%s", b.mcpPort),
 		fmt.Sprintf("KANBANAI_MCP_URL=http://localhost:%s/mcp/sse", b.mcpPort),
 		fmt.Sprintf("KANBANAI_API_BASE_URL=%s", b.apiBaseURL),

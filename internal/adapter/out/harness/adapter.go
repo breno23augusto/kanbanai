@@ -94,7 +94,7 @@ func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.
 	}
 	runCtx, cancel := context.WithTimeout(context.Background(), timeout)
 
-	cmd, err := a.builder.Build(runCtx, config.HarnessCmd, config.ModelName, task.ID, prompt)
+	cmd, err := a.builder.Build(runCtx, config.HarnessCmd, config.ModelName, task.ID, string(phase), prompt)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to build command: %w", err)
