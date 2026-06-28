@@ -1,4 +1,4 @@
-# KanbanAI
+# DRAFT - KanbanAI
 
 An AI-powered Kanban board where cards move themselves through the pipeline.
 Create a task, and an autonomous coding agent (the **harness**) picks it up,
@@ -17,6 +17,10 @@ each phase. You watch it happen live in the browser.
 The board is the source of truth; the agent is a worker that talks to it. If a
 phase fails review, the card is sent back a lane (reopened) with the reviewer's
 feedback injected into the next attempt.
+
+[![Watch the video](./docs/Kanbanai.mp4)](./docs/Kanbanai.mp4)
+
+INSPIRADO EM https://github.com/igorhvr/tamandua 
 
 ---
 

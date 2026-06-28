@@ -9,22 +9,22 @@ import (
 	"kanbanai/internal/domain/repository"
 )
 
-// PhaseConfigProviderImpl is the runtime-mutable source of truth for per-phase
+// PhaseConfigProviderMemory is the runtime-mutable source of truth for per-phase
 // harness configuration. It merges the env-derived defaults (immutable, built by
 // BuildPhaseConfigs) with DB overrides (editable from the UI). An override field
 // that is "" / 0 inherits the default — identical to the env-var semantics.
 //
 // The harness adapter calls Get on every Dispatch, so UI edits take effect on
 // the next phase dispatch without a server restart.
-type PhaseConfigProviderImpl struct {
+type PhaseConfigProviderMemory struct {
 	defaults  map[entity.Phase]entity.PhaseConfig // immutable, env-seeded
 	overrides map[entity.Phase]entity.PhaseConfig // DB-loaded, "" / 0 = inherit
 	repo      repository.PhaseConfigRepository
 	mu       sync.RWMutex
 }
 
-func NewPhaseConfigProvider(defaults map[entity.Phase]entity.PhaseConfig, repo repository.PhaseConfigRepository) *PhaseConfigProviderImpl {
-	return &PhaseConfigProviderImpl{
+func NewPhaseConfigProvider(defaults map[entity.Phase]entity.PhaseConfig, repo repository.PhaseConfigRepository) *PhaseConfigProviderMemory {
+	return &PhaseConfigProviderMemory{
 		defaults:  defaults,
 		overrides: make(map[entity.Phase]entity.PhaseConfig),
 		repo:      repo,
@@ -33,7 +33,7 @@ func NewPhaseConfigProvider(defaults map[entity.Phase]entity.PhaseConfig, repo r
 
 // merge returns the effective config for a phase: the env default with any
 // non-empty DB override field applied on top.
-func (p *PhaseConfigProviderImpl) merge(phase entity.Phase) entity.PhaseConfig {
+func (p *PhaseConfigProviderMemory) merge(phase entity.Phase) entity.PhaseConfig {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -58,12 +58,12 @@ func (p *PhaseConfigProviderImpl) merge(phase entity.Phase) entity.PhaseConfig {
 	return merged
 }
 
-func (p *PhaseConfigProviderImpl) Get(phase entity.Phase) entity.PhaseConfig {
+func (p *PhaseConfigProviderMemory) Get(phase entity.Phase) entity.PhaseConfig {
 	return p.merge(phase)
 }
 
 // Snapshot returns the effective config for all non-terminal lanes in PhaseOrder.
-func (p *PhaseConfigProviderImpl) Snapshot() []entity.PhaseConfig {
+func (p *PhaseConfigProviderMemory) Snapshot() []entity.PhaseConfig {
 	out := make([]entity.PhaseConfig, 0, len(entity.PhaseOrder))
 	for _, phase := range entity.PhaseOrder {
 		if phase.IsTerminal() {
@@ -75,7 +75,7 @@ func (p *PhaseConfigProviderImpl) Snapshot() []entity.PhaseConfig {
 }
 
 // Defaults returns the env-derived baseline (without DB overrides), in PhaseOrder.
-func (p *PhaseConfigProviderImpl) Defaults() []entity.PhaseConfig {
+func (p *PhaseConfigProviderMemory) Defaults() []entity.PhaseConfig {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	out := make([]entity.PhaseConfig, 0, len(entity.PhaseOrder))
@@ -90,7 +90,7 @@ func (p *PhaseConfigProviderImpl) Defaults() []entity.PhaseConfig {
 	return out
 }
 
-func (p *PhaseConfigProviderImpl) Reload(ctx context.Context) error {
+func (p *PhaseConfigProviderMemory) Reload(ctx context.Context) error {
 	overrides, err := p.repo.GetAll(ctx)
 	if err != nil {
 		return fmt.Errorf("load phase_config overrides: %w", err)
@@ -107,7 +107,7 @@ func (p *PhaseConfigProviderImpl) Reload(ctx context.Context) error {
 // Replace writes the given overrides to the DB and refreshes the in-memory cache.
 // Each field "" / 0 means "inherit default"; passing a PhaseConfig whose fields are
 // all zero effectively resets that lane to the env default.
-func (p *PhaseConfigProviderImpl) Replace(ctx context.Context, overrides []entity.PhaseConfig) error {
+func (p *PhaseConfigProviderMemory) Replace(ctx context.Context, overrides []entity.PhaseConfig) error {
 	if err := p.repo.UpsertAll(ctx, overrides); err != nil {
 		return fmt.Errorf("persist phase_configs: %w", err)
 	}
