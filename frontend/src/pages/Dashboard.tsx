@@ -56,8 +56,8 @@ export const Dashboard: React.FC = () => {
   useSSE(handleSSEEvent);
 
   const handleCreate = useCallback(
-    async (title: string, description: string, priority: number) => {
-      await createTask(title, description, priority);
+    async (title: string, description: string, priority: number, workspace: string) => {
+      await createTask(title, description, priority, workspace);
     },
     [createTask],
   );

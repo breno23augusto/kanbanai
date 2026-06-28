@@ -209,6 +209,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
   const [editTitle, setEditTitle] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [editPriority, setEditPriority] = useState(0);
+  const [editWorkspace, setEditWorkspace] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
 
   // sync local task + load detail whenever a different task is opened.
@@ -292,6 +293,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
     setEditTitle(t.title);
     setEditDesc(t.description);
     setEditPriority(t.priority);
+    setEditWorkspace(t.workspace ?? '');
     setEditError(null);
     setEditing(true);
   };
@@ -309,6 +311,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
         title: editTitle.trim(),
         description: editDesc,
         priority: editPriority,
+        workspace: editWorkspace.trim(),
         version: t.version,
       });
       setEditing(false);
@@ -475,6 +478,15 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
                   size="small"
                   sx={{ maxWidth: 140 }}
                 />
+                <TextField
+                  label="Workspace"
+                  value={editWorkspace}
+                  onChange={(e) => setEditWorkspace(e.target.value)}
+                  size="small"
+                  fullWidth
+                  helperText="harness cwd (empty = server default)"
+                  FormHelperTextProps={{ sx: { fontFamily: mono, fontSize: '0.6rem', color: tokens.ink.faint, ml: 0 } }}
+                />
                 {editError && (
                   <Typography sx={{ fontFamily: mono, fontSize: '0.66rem', color: tokens.signal.coral }}>
                     {editError}
@@ -520,6 +532,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
             <Meta label="updated" value={new Date(t.updated_at).toLocaleString()} />
             <Meta label="version" value={`v${t.version}`} />
             <Meta label="phase" value={t.current_phase} />
+            <Meta label="workspace" value={t.workspace || '(server default)'} />
           </Box>
 
           {/* failure reason — surfaced when the task entered the failed state.

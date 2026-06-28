@@ -59,6 +59,7 @@ func (uc *ListTasks) Execute(ctx context.Context, filter dto.TaskFilter) ([]*dto
 			Priority:     t.Priority,
 			Version:      t.Version,
 			ErrorMessage: t.ErrorMessage,
+			Workspace:    t.Workspace,
 			CreatedAt:    t.CreatedAt,
 			UpdatedAt:    t.UpdatedAt,
 		}

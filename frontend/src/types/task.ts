@@ -27,6 +27,7 @@ export interface Task {
   error_message: string;
   subtasks: Subtask[] | null;
   subtask_summary: SubtaskSummary | null;
+  workspace: string;
   created_at: string;
   updated_at: string;
 }

@@ -189,6 +189,7 @@ func (o *PhaseOrchestrator) dispatchPhase(ctx context.Context, task *entity.Task
 		Description: updated.Description,
 		ID:          updated.ID,
 		Phase:       string(phase),
+		Workspace:   updated.Workspace,
 	}
 
 	// Review phases (validating, testing) need the upstream context to judge

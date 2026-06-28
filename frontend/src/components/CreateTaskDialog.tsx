@@ -17,7 +17,7 @@ import { tokens } from '../theme/theme';
 interface CreateTaskDialogProps {
   open: boolean;
   onClose: () => void;
-  onCreate: (title: string, description: string, priority: number) => Promise<void>;
+  onCreate: (title: string, description: string, priority: number, workspace: string) => Promise<void>;
 }
 
 const mono = '"JetBrains Mono", monospace';
@@ -33,16 +33,18 @@ export const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({ open, onClos
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState(0);
+  const [workspace, setWorkspace] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async () => {
     if (!title.trim()) return;
     setSubmitting(true);
     try {
-      await onCreate(title, description, priority);
+      await onCreate(title, description, priority, workspace.trim());
       setTitle('');
       setDescription('');
       setPriority(0);
+      setWorkspace('');
       onClose();
     } catch (err) {
       console.error('Failed to create task:', err);
@@ -104,6 +106,18 @@ export const CreateTaskDialog: React.FC<CreateTaskDialogProps> = ({ open, onClos
             </MenuItem>
           ))}
         </TextField>
+
+        <Typography sx={{ fontFamily: mono, fontSize: '0.56rem', letterSpacing: '0.12em', color: tokens.ink.faint, textTransform: 'uppercase', mt: 2, mb: 0.75 }}>
+          workspace · optional
+        </Typography>
+        <TextField
+          fullWidth
+          placeholder="/path/to/repo — harness cwd for this task"
+          value={workspace}
+          onChange={(e) => setWorkspace(e.target.value)}
+          helperText="Leave empty to use the server default. The agent reads, edits and writes here."
+          FormHelperTextProps={{ sx: { fontFamily: mono, fontSize: '0.62rem', color: tokens.ink.faint, ml: 0 } }}
+        />
 
         <Box
           sx={{

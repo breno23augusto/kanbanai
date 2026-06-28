@@ -61,12 +61,14 @@ type createTaskRequest struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Priority    int    `json:"priority"`
+	Workspace   string `json:"workspace"`
 }
 
 type updateTaskRequest struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Priority    int    `json:"priority"`
+	Workspace   string `json:"workspace"`
 	Version     int    `json:"version"`
 }
 
@@ -81,6 +83,7 @@ func (h *TaskHandler) Create(c *gin.Context) {
 		Title:       req.Title,
 		Description: req.Description,
 		Priority:    req.Priority,
+		Workspace:   req.Workspace,
 	}
 
 	result, err := h.createTaskUC.Execute(c.Request.Context(), input)
@@ -105,6 +108,7 @@ func (h *TaskHandler) Update(c *gin.Context) {
 		Title:       req.Title,
 		Description: req.Description,
 		Priority:    req.Priority,
+		Workspace:   req.Workspace,
 	}
 
 	result, err := h.updateTaskUC.Execute(c.Request.Context(), id, input, req.Version)
@@ -149,6 +153,7 @@ func (h *TaskHandler) Get(c *gin.Context) {
 		Priority:     result.Task.Priority,
 		Version:      result.Task.Version,
 		ErrorMessage: result.Task.ErrorMessage,
+		Workspace:    result.Task.Workspace,
 		CreatedAt:    result.Task.CreatedAt,
 		UpdatedAt:    result.Task.UpdatedAt,
 	}

@@ -21,7 +21,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 const tasksPath = (id: string) => `/api/v1/tasks/${id}`;
 
 export const api = {
-  createTask: (data: { title: string; description: string; priority: number }) =>
+  createTask: (data: { title: string; description: string; priority: number; workspace?: string }) =>
     request<Task>('/api/v1/tasks', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -39,7 +39,7 @@ export const api = {
   // Full detail including phase outputs (what the harness produced per phase).
   getTaskDetail: (id: string) => request<TaskDetail>(tasksPath(id)),
 
-  updateTask: (id: string, data: { title: string; description: string; priority: number; version: number }) =>
+  updateTask: (id: string, data: { title: string; description: string; priority: number; workspace?: string; version: number }) =>
     request<Task>(tasksPath(id), {
       method: 'PUT',
       body: JSON.stringify(data),

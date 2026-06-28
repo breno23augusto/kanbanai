@@ -14,6 +14,8 @@ type TaskOutput struct {
 	Priority     int           `json:"priority"`
 	Version      int           `json:"version"`
 	ErrorMessage string        `json:"error_message"`
+	// Workspace is the harness working directory for this task (empty = server default).
+	Workspace   string        `json:"workspace"`
 	// Subtasks carries the per-subtask status so the board card can render
 	// live progress. Populated by ListTasks and GetTask.
 	Subtasks      []SubtaskDTO  `json:"subtasks"`

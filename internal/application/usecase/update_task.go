@@ -40,6 +40,7 @@ func (uc *UpdateTask) Execute(ctx context.Context, id string, input dto.CreateTa
 		task.Title = input.Title
 		task.Description = input.Description
 		task.Priority = input.Priority
+		task.Workspace = input.Workspace
 		task.UpdatedAt = time.Now()
 
 		if err := uc.taskRepo.Update(ctx, task); err != nil {
@@ -67,6 +68,7 @@ func (uc *UpdateTask) Execute(ctx context.Context, id string, input dto.CreateTa
 			Priority:     task.Priority,
 			Version:      task.Version,
 			ErrorMessage: task.ErrorMessage,
+			Workspace:    task.Workspace,
 			CreatedAt:    task.CreatedAt,
 			UpdatedAt:    task.UpdatedAt,
 		}, nil

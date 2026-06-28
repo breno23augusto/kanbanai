@@ -34,6 +34,7 @@ func (uc *CreateTask) Execute(ctx context.Context, input dto.CreateTaskInput) (*
 		Status:       entity.StatusPending,
 		Priority:     input.Priority,
 		Version:      1,
+		Workspace:    input.Workspace,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -58,6 +59,7 @@ func (uc *CreateTask) Execute(ctx context.Context, input dto.CreateTaskInput) (*
 		Priority:     task.Priority,
 		Version:      task.Version,
 		ErrorMessage: task.ErrorMessage,
+		Workspace:    task.Workspace,
 		CreatedAt:    task.CreatedAt,
 		UpdatedAt:    task.UpdatedAt,
 	}, nil

@@ -49,6 +49,8 @@ reopen_phase (target_phase=planning) so the architect can redo it — do not inv
 			"doing": `You are a Senior Software Engineer. Implement the solution for the task "{{.Title}}" ({{.Description}}) in the repository.
 Produce clean and cohesive code.
 
+{{if .Workspace}}WORKSPACE: your working directory is {{.Workspace}}. Operate there (read/edit/write resolve relative to it).{{else}}WORKSPACE: operate in your current working directory (the server's default workspace).{{end}}
+
 SUBTASKS (the tracked checklist created in planning):
 {{.Subtasks}}
 
@@ -135,6 +137,11 @@ type PromptData struct {
 	Phase        string
 	MCPServerURL string
 	APIBaseURL   string
+
+	// Workspace is the filesystem path the harness runs in for this task. When
+	// non-empty, prompts can tell the agent where its repository lives. Empty
+	// means the server's configured default workspace is in use.
+	Workspace string
 
 	// AcceptanceCriteria carries the consolidated outputs of the upstream
 	// refinement phases (planning + todo), i.e. the original requirement as

@@ -21,13 +21,13 @@ export function useTasks() {
     loadTasks();
   }, [loadTasks]);
 
-  const createTask = async (title: string, description: string, priority: number) => {
-    const task = await api.createTask({ title, description, priority });
+  const createTask = async (title: string, description: string, priority: number, workspace: string) => {
+    const task = await api.createTask({ title, description, priority, workspace: workspace || undefined });
     setTasks((prev) => [...prev, task]);
     return task;
   };
 
-  const updateTask = async (id: string, data: { title: string; description: string; priority: number; version: number }) => {
+  const updateTask = async (id: string, data: { title: string; description: string; priority: number; workspace?: string; version: number }) => {
     const task = await api.updateTask(id, data);
     setTasks((prev) => prev.map((t) => (t.id === id ? task : t)));
     return task;
