@@ -1,3 +1,0 @@
-#!/usr/bin/env node
-console.log("mock claude running");
-process.exit(0);

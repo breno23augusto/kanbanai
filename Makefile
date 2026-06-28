@@ -1,4 +1,4 @@
-.PHONY: build run test lint migrate dev clean
+.PHONY: build run test lint migrate dev clean smoke-test smoke-pi smoke-claude
 
 build:
 	go build -o bin/kanbanai cmd/kanbanai/main.go
@@ -36,3 +36,14 @@ docker-build:
 
 docker-run:
 	docker run -p 8080:8080 -p 8081:8081 kanbanai
+
+# --- Harness smoke tests (no real model / no server required) ---
+# Each harness wrapper is exercised against a mock SDK (pi) or mock binary
+# (claude) + an in-process mock KanbanAI REST API. Fast, deterministic.
+smoke-test: smoke-pi smoke-claude
+
+smoke-pi:
+	node tests/pi-harness-smoke.mjs
+
+smoke-claude:
+	node tests/claude-harness-smoke.mjs
