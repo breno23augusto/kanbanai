@@ -24,6 +24,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import EditIcon from '@mui/icons-material/Edit';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SaveIcon from '@mui/icons-material/Save';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 
 interface TaskDetailDrawerProps {
   task: Task | null;
@@ -269,6 +270,24 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
   const handleResume = () => runAction('Resume', () => api.resumeTask(t.id));
   const handleRetry = () => runAction('Retry', () => api.retryTask(t.id));
 
+  const handleDelete = async () => {
+    const confirmed = window.confirm(
+      `Delete task "${t.title}"?\nThis permanently removes the task, its phase outputs, and subtasks. This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      await api.deleteTask(t.id);
+      onTaskChanged?.();
+      onClose();
+    } catch (err) {
+      console.error('Delete failed:', err);
+      alert(`Delete failed: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const startEdit = () => {
     setEditTitle(t.title);
     setEditDesc(t.description);
@@ -402,6 +421,20 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
                   sx={actionSx(tokens.ink.dim)}
                 >
                   Edit
+                </Button>
+              </Tooltip>
+            )}
+            {!editing && (
+              <Tooltip title="Permanently delete this task, its outputs and subtasks">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<DeleteOutlineIcon />}
+                  disabled={busy}
+                  onClick={handleDelete}
+                  sx={actionSx(tokens.signal.coral)}
+                >
+                  Delete
                 </Button>
               </Tooltip>
             )}
