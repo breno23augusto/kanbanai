@@ -103,6 +103,42 @@ func TestPromptBuilderValidatingPromptContainsFailureContract(t *testing.T) {
 	}
 }
 
+func TestPromptBuilderValidatingPromptComparesOriginalVsImplemented(t *testing.T) {
+	pb := NewPromptBuilder("http://localhost:8080/api/v1")
+	result, err := pb.Build("validating", PromptData{
+		Title:               "tic tac toe",
+		Description:         "simple js tic tac toe game",
+		ID:                 "t42",
+		Phase:               "validating",
+		AcceptanceCriteria:  "AC1: 3x3 board\nAC2: two players alternate",
+		ImplementationReport: "Implemented index.html with board + click handlers",
+	})
+	if err != nil {
+		t.Fatalf("Build(validating) error: %v", err)
+	}
+
+	// The reviewer must be told to evaluate the original prompt.
+	mustContain := []string{
+		"ORIGINAL PROMPT",
+		"simple js tic tac toe game",
+		"ACCEPTANCE CRITERIA",
+		"AC1: 3x3 board",
+		"IMPLEMENTATION REPORT",
+		"Implemented index.html",
+		"STEP 1",
+		"STEP 2",
+		"STEP 3",
+		"Evaluate",
+		"VERDICT",
+		"get_task",
+	}
+	for _, sub := range mustContain {
+		if !contains(result, sub) {
+			t.Errorf("validating prompt missing %q\n--- prompt ---\n%s", sub, result)
+		}
+	}
+}
+
 func TestPromptBuilderDoingPromptContainsFailureContract(t *testing.T) {
 	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 	result, err := pb.Build("doing", PromptData{Title: "X", Description: "D", ID: "t7", Phase: "doing"})

@@ -181,17 +181,89 @@ func (o *PhaseOrchestrator) dispatchPhase(ctx context.Context, task *entity.Task
 		Timestamp: time.Now(),
 	})
 
-	prompt, err := o.promptBuilder.Build(string(phase), PromptData{
+	data := PromptData{
 		Title:       updated.Title,
 		Description: updated.Description,
 		ID:          updated.ID,
 		Phase:       string(phase),
-	})
+	}
+
+	// Review phases (validating, testing) need the upstream context to judge
+	// the implementation against the original prompt. Populate the acceptance
+	// criteria (planning + todo outputs) and the implementation report (doing
+	// output) so the reviewer can perform the comparison without having to
+	// fetch every artifact itself. Errors here are non-fatal: a missing prior
+	// output just yields an empty block, and the prompt instructs the harness
+	// to fall back to the get_task MCP tool (SPEC §6.3.7).
+	if phase == entity.PhaseValidating || phase == entity.PhaseTesting {
+		if err := o.populatePriorContext(ctx, updated.ID, phase, &data); err != nil {
+			slog.Warn("orchestrator: failed to load prior phase context",
+				"taskID", updated.ID, "phase", phase, "error", err)
+		}
+	}
+
+	prompt, err := o.promptBuilder.Build(string(phase), data)
 	if err != nil {
 		return fmt.Errorf("prompt build: %w", err)
 	}
 
 	return o.harnessAdapter.Dispatch(ctx, updated, phase, prompt)
+}
+
+// populatePriorContext loads the phase outputs produced upstream of the given
+// review phase and fills the AcceptanceCriteria and ImplementationReport fields
+// of data. Acceptance criteria come from the refinement lanes that precede the
+// implementation (planning + todo); the implementation report comes from the
+// doing lane. Each block combines the raw Output (saved via update_task_output)
+// and the Summary (saved via complete_phase), preferring the richer raw output
+// and falling back to the summary. Empty phases collapse to a single
+// "(no output saved)" line so the prompt stays well-formed and the reviewer is
+// explicitly told to fetch the data via get_task.
+func (o *PhaseOrchestrator) populatePriorContext(ctx context.Context, taskID string, phase entity.Phase, data *PromptData) error {
+	outputs, err := o.phaseOutputRepo.FindByFilters(ctx, repository.Criteria{
+		{Key: "task_id", Value: taskID, Operator: repository.OpEquals},
+	})
+	if err != nil {
+		return fmt.Errorf("find phase outputs: %w", err)
+	}
+
+	byPhase := make(map[entity.Phase]*entity.PhaseOutput, len(outputs))
+	for _, po := range outputs {
+		// Keep the most recently updated record per phase (there should be only
+		// one, but defend against duplicates from retries).
+		if cur, ok := byPhase[po.Phase]; ok && !po.UpdatedAt.After(cur.UpdatedAt) {
+			continue
+		}
+		byPhase[po.Phase] = po
+	}
+
+	block := func(phases ...entity.Phase) string {
+		var parts []string
+		for _, p := range phases {
+			po, ok := byPhase[p]
+			if !ok {
+				parts = append(parts, fmt.Sprintf("[%s] (no output saved)", p))
+				continue
+			}
+			text := po.Output
+			if strings.TrimSpace(text) == "" {
+				text = po.Summary
+			}
+			if strings.TrimSpace(text) == "" {
+				parts = append(parts, fmt.Sprintf("[%s] (no output saved)", p))
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("[%s]\n%s", p, text))
+		}
+		return strings.Join(parts, "\n\n")
+	}
+
+	switch phase {
+	case entity.PhaseValidating, entity.PhaseTesting:
+		data.AcceptanceCriteria = block(entity.PhasePlanning, entity.PhaseTodo)
+		data.ImplementationReport = block(entity.PhaseDoing)
+	}
+	return nil
 }
 
 func (o *PhaseOrchestrator) KillProcess(taskID string) {

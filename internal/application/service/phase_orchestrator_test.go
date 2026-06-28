@@ -78,6 +78,85 @@ func (r *fakePhaseOutputRepoSvc) FindByFilters(ctx context.Context, criteria rep
 	return nil, nil
 }
 
+// statefulPhaseOutputRepo is a fake that actually stores phase outputs so the
+// orchestrator can exercise populatePriorContext end-to-end.
+type statefulPhaseOutputRepo struct {
+	mu      sync.Mutex
+	outputs map[string]*entity.PhaseOutput // keyed by id
+}
+
+func newStatefulPhaseOutputRepo() *statefulPhaseOutputRepo {
+	return &statefulPhaseOutputRepo{outputs: make(map[string]*entity.PhaseOutput)}
+}
+
+func (r *statefulPhaseOutputRepo) Create(ctx context.Context, output *entity.PhaseOutput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outputs[output.ID] = output
+	return nil
+}
+func (r *statefulPhaseOutputRepo) Update(ctx context.Context, output *entity.PhaseOutput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outputs[output.ID] = output
+	return nil
+}
+func (r *statefulPhaseOutputRepo) Delete(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.outputs, id)
+	return nil
+}
+func (r *statefulPhaseOutputRepo) Find(ctx context.Context, id string) (*entity.PhaseOutput, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	po, ok := r.outputs[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *po
+	return &cp, nil
+}
+func (r *statefulPhaseOutputRepo) FindByFilters(ctx context.Context, criteria repository.Criteria) ([]*entity.PhaseOutput, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var taskID string
+	for _, c := range criteria {
+		if c.Key == "task_id" {
+			if s, ok := c.Value.(string); ok {
+				taskID = s
+			}
+		}
+	}
+	var result []*entity.PhaseOutput
+	for _, po := range r.outputs {
+		if taskID == "" || po.TaskID == taskID {
+			cp := *po
+			result = append(result, &cp)
+		}
+	}
+	return result, nil
+}
+
+// capturingHarness records the prompt sent for each dispatch so tests can
+// assert that prior-phase context was injected.
+type capturingHarness struct {
+	fakeHarness
+	prompts   map[entity.Phase]string
+	promptMu  sync.Mutex
+}
+
+func newCapturingHarness() *capturingHarness {
+	return &capturingHarness{prompts: make(map[entity.Phase]string)}
+}
+
+func (h *capturingHarness) Dispatch(ctx context.Context, task *entity.Task, phase entity.Phase, prompt string) error {
+	h.promptMu.Lock()
+	h.prompts[phase] = prompt
+	h.promptMu.Unlock()
+	return h.fakeHarness.Dispatch(ctx, task, phase, prompt)
+}
+
 type fakeHarness struct {
 	dispatchedPhases []entity.Phase
 	dispatchedTasks  []string
@@ -210,6 +289,121 @@ func TestOrchestratorAdvancePhaseTransitionsLane(t *testing.T) {
 	}
 	if !foundTransition {
 		t.Error("expected LaneTransitionCompleted event from planning to todo")
+	}
+}
+
+func TestOrchestratorValidatingPromptCarriesPriorContext(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	outRepo := newStatefulPhaseOutputRepo()
+	harness := newCapturingHarness()
+	disp := &recordingDisp{}
+	pb := NewPromptBuilder("http://localhost:8080/api/v1")
+
+	orch := NewPhaseOrchestrator(repo, outRepo, harness, pb, disp)
+
+	now := time.Now()
+	task := &entity.Task{
+		ID:           "t1",
+		Title:        "tic tac toe",
+		Description:  "simple js tic tac toe game",
+		CurrentPhase: entity.PhaseDoing,
+		Status:       entity.StatusInProgress,
+		Version:      1,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	repo.tasks["t1"] = task
+
+	// Prior-phase artifacts the validation phase must evaluate.
+	_ = outRepo.Create(context.Background(), &entity.PhaseOutput{
+		ID: "po-plan", TaskID: "t1", Phase: entity.PhasePlanning,
+		Output: "AC1: 3x3 grid board", CreatedAt: now, UpdatedAt: now,
+	})
+	_ = outRepo.Create(context.Background(), &entity.PhaseOutput{
+		ID: "po-todo", TaskID: "t1", Phase: entity.PhaseTodo,
+		Output: "AC2: two players alternate turns", CreatedAt: now, UpdatedAt: now,
+	})
+	_ = outRepo.Create(context.Background(), &entity.PhaseOutput{
+		ID: "po-doing", TaskID: "t1", Phase: entity.PhaseDoing,
+		Output: "Implemented index.html with board + click handlers", CreatedAt: now, UpdatedAt: now,
+	})
+
+	if err := orch.AdvancePhase(context.Background(), "t1"); err != nil {
+		t.Fatalf("AdvancePhase error: %v", err)
+	}
+
+	if updated := repo.tasks["t1"]; updated.CurrentPhase != entity.PhaseValidating {
+		t.Fatalf("phase = %s, want validating", updated.CurrentPhase)
+	}
+
+	harness.promptMu.Lock()
+	prompt := harness.prompts[entity.PhaseValidating]
+	harness.promptMu.Unlock()
+
+	if prompt == "" {
+		t.Fatalf("no prompt captured for validating phase")
+	}
+
+	mustContain := []string{
+		"ORIGINAL PROMPT",
+		"simple js tic tac toe game",
+		"ACCEPTANCE CRITERIA",
+		"AC1: 3x3 grid board",
+		"AC2: two players alternate turns",
+		"IMPLEMENTATION REPORT",
+		"Implemented index.html with board + click handlers",
+		"STEP 1",
+		"STEP 2",
+		"STEP 3",
+		"VERDICT",
+	}
+	for _, sub := range mustContain {
+		if !contains(prompt, sub) {
+			t.Errorf("validating prompt missing %q", sub)
+		}
+	}
+}
+
+func TestOrchestratorValidatingPromptHandlesMissingOutputs(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	outRepo := newStatefulPhaseOutputRepo()
+	harness := newCapturingHarness()
+	disp := &recordingDisp{}
+	pb := NewPromptBuilder("http://localhost:8080/api/v1")
+
+	orch := NewPhaseOrchestrator(repo, outRepo, harness, pb, disp)
+
+	now := time.Now()
+	task := &entity.Task{
+		ID:           "t1",
+		Title:        "tic tac toe",
+		Description:  "simple js tic tac toe game",
+		CurrentPhase: entity.PhaseDoing,
+		Status:       entity.StatusInProgress,
+		Version:      1,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	repo.tasks["t1"] = task
+
+	// No prior outputs saved at all — the prompt must still render and instruct
+	// the reviewer to fetch them via get_task.
+	if err := orch.AdvancePhase(context.Background(), "t1"); err != nil {
+		t.Fatalf("AdvancePhase error: %v", err)
+	}
+
+	harness.promptMu.Lock()
+	prompt := harness.prompts[entity.PhaseValidating]
+	harness.promptMu.Unlock()
+
+	if prompt == "" {
+		t.Fatalf("no prompt captured for validating phase")
+	}
+	if !contains(prompt, "(no output saved)") {
+		t.Errorf("expected placeholder for missing outputs, got:\n%s", prompt)
+	}
+	if !contains(prompt, "get_task") {
+		t.Errorf("expected get_task fallback instruction when outputs missing")
 	}
 }
 

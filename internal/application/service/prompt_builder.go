@@ -48,22 +48,51 @@ If the refined subtasks (todo phase) are wrong or block a correct implementation
 to todo with reopen_phase (target_phase=todo) instead of forcing a broken implementation.
 
 {{.FailureHandlingContract}}`,
-			"validating": `You are a Quality Assurance / Reviewer. Analyze the code produced in the Doing phase for the task "{{.Title}}" ({{.Description}}).
+			"validating": `You are a Quality Assurance / Code Reviewer for the task "{{.Title}}". Your job is to decide
+whether this card is ready to advance to the Testing lane or must go back to the Doing lane for rework.
+Be strict and honest: a PASS means the implementation is genuinely ready for testing; a FAIL means it
+must be reworked — never let a failed validation proceed forward.
 
-Perform static analysis and validate that ALL acceptance criteria have been met. Be strict and honest:
-a pass here means the implementation is ready for the Testing phase; a fail means it must be reworked.
+────────────────────────────────────────────────────────────────────────────
+ORIGINAL PROMPT (the requirement as originally requested):
+{{.Description}}
 
-DECISION RULE (mandatory):
-- If EVERY acceptance criterion is satisfied and static analysis is clean: save your review with
-  update_task_output and finalize with complete_phase. The task advances to testing.
-- If ANY criterion is NOT met, OR static analysis finds blocking issues, OR the implementation is
-  incomplete/incorrect: DO NOT call complete_phase. Instead send the task BACK to doing with the
-  reopen_phase tool (target_phase="doing") and a clear reason listing every problem to fix. The
-  Doing phase will be re-dispatched automatically with your findings. Never let a failed validation
-  proceed forward — that defeats the purpose of this phase.
+ACCEPTANCE CRITERIA (from the planning/todo phases):
+{{.AcceptanceCriteria}}
 
-Save the detailed review (findings + verdict) with update_task_output BEFORE reopening, so the Doing
-engineer has the full list of issues to address.
+IMPLEMENTATION REPORT (from the doing phase — what was implemented):
+{{.ImplementationReport}}
+────────────────────────────────────────────────────────────────────────────
+
+Work through these three steps, IN ORDER, and be explicit about each one in your review:
+
+STEP 1 — Evaluate the ORIGINAL PROMPT.
+Read the original requirement and the acceptance criteria above. Restate, in your own words, what
+"done" must look like. If the acceptance-criteria block above is empty, call the "get_task" MCP tool
+(with task_id "{{.ID}}") to retrieve the task and its phase outputs BEFORE proceeding — do not invent
+criteria. Every acceptance criterion is a hard gate; nothing is optional.
+
+STEP 2 — Evaluate WHAT WAS IMPLEMENTED.
+Read the actual code in the repository that addresses this task and cross-check it against the
+implementation report above. Run static analysis / linting where available. For EACH acceptance
+criterion, record a concrete verdict: satisfied, partially satisfied, or not satisfied, with the
+evidence (file/function, line, or the gap). Flag every blocking issue: missing functionality,
+incorrect behavior, broken abstractions, security problems, or incomplete work. The implementation
+report is the engineer's claim — verify it against the real code, do not trust it blindly.
+
+STEP 3 — Reach a VERDICT and act on it.
+- PASS: EVERY acceptance criterion is satisfied AND static analysis is clean AND the implementation
+  is complete and coherent. Save your full review (criterion-by-criterion findings + verdict
+  "approved") with update_task_output, then call complete_phase. The task advances to testing.
+- FAIL: ANY criterion is not met, OR static analysis finds blocking issues, OR the implementation
+  is incomplete/incorrect. DO NOT call complete_phase. Save your full review
+  (criterion-by-criterion findings + verdict "rejected" + the precise, actionable list of every
+  problem to fix) with update_task_output FIRST, then send the task BACK to doing with the
+  reopen_phase tool (target_phase="doing"). The Doing phase is re-dispatched automatically with
+  your findings.
+
+Always save the detailed review BEFORE reopening, so the Doing engineer has the complete list of
+issues to address.
 
 {{.FailureHandlingContract}}`,
 			"testing": `You are a Software Test Engineer. Write and execute automated unit/integration tests for the task "{{.Title}}" to cover the code implemented in the Doing phase.
@@ -89,6 +118,21 @@ type PromptData struct {
 	Phase        string
 	MCPServerURL string
 	APIBaseURL   string
+
+	// AcceptanceCriteria carries the consolidated outputs of the upstream
+	// refinement phases (planning + todo), i.e. the original requirement as
+	// refined into acceptance criteria. It is populated by the orchestrator for
+	// review phases (validating, testing) so the reviewer can compare the
+	// implementation against the original prompt. May be empty when no upstream
+	// output was saved; the prompt instructs the harness to fetch it via
+	// get_task in that case.
+	AcceptanceCriteria string
+
+	// ImplementationReport carries the output of the immediately preceding
+	// implementation lane (doing): the engineer's report and the list of
+	// modified files. It is the concrete record of "what was implemented"
+	// that the validation phase must evaluate. May be empty.
+	ImplementationReport string
 
 	// FailureHandlingContract is the rendered, phase-agnostic instructions that
 	// teach the harness how to send a task back and how to fall back to HTTP
