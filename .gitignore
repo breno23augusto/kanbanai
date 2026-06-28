@@ -30,3 +30,7 @@ workspace/
 # OS
 .DS_Store
 Thumbs.db
+
+# machine-local secrets (claude harness auth)
+.env.local
+
