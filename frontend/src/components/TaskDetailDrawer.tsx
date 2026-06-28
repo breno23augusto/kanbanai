@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Task, PhaseOutput, Subtask, PHASE_ORDER, PHASE_LABELS } from '../types/task';
 import { api } from '../services/api';
 import { Lamp } from './Lamp';
+import { LiveTail } from './LiveTail';
 import { MarkdownView, SubtaskSummary, extractSubtasks } from './MarkdownView';
 import { tokens } from '../theme/theme';
 import {
@@ -589,6 +590,23 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
               )}
             </Box>
           )}
+
+          {/* reopen reason — why a downstream phase sent this task back for
+              rework. Shown whenever it's present (in_progress rework attempt). */}
+          {t.reopen_reason && (
+            <Box sx={{ mb: 3, p: 1.25, border: `1px solid ${tokens.signal.amber}55`, borderRadius: 1, bgcolor: `${tokens.signal.amber}0a` }}>
+              <Typography sx={{ fontFamily: mono, fontSize: '0.56rem', letterSpacing: '0.12em', textTransform: 'uppercase', color: tokens.signal.amber, mb: 0.5 }}>
+                rework feedback · why this came back
+              </Typography>
+              <Typography sx={{ fontFamily: sans, fontSize: '0.8rem', color: tokens.ink.text, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                {t.reopen_reason}
+              </Typography>
+            </Box>
+          )}
+
+          {/* live harness output — stream the agent's stdout/stderr in real time
+              while a phase is running, so the operator can see what it's doing. */}
+          {live && <LiveTail task={t} />}
 
           {/* subtasks — the tracked checklist created in planning, with live
               per-subtask status reported by the harness via MCP as it works. */}

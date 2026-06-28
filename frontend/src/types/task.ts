@@ -28,6 +28,7 @@ export interface Task {
   subtasks: Subtask[] | null;
   subtask_summary: SubtaskSummary | null;
   workspace: string;
+  reopen_reason: string;
   created_at: string;
   updated_at: string;
 }

@@ -34,13 +34,13 @@ func (q *TaskWithPhasesQuerySQLite) loadSubtasks(ctx context.Context, taskID str
 }
 
 func (q *TaskWithPhasesQuerySQLite) Get(taskID string) (*query.TaskWithPhasesResult, error) {
-	taskQuery := `SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, created_at, updated_at
+	taskQuery := `SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, reopen_reason, created_at, updated_at
 	               FROM tasks WHERE id = ?`
 	row := q.db.QueryRow(taskQuery, taskID)
 
 	task := &entity.Task{}
 	err := row.Scan(&task.ID, &task.Title, &task.Description, &task.CurrentPhase,
-		&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace,
+		&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace, &task.ReopenReason,
 		&task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -81,7 +81,7 @@ func (q *TaskWithPhasesQuerySQLite) Get(taskID string) (*query.TaskWithPhasesRes
 }
 
 func (q *TaskWithPhasesQuerySQLite) List(criteria repository.Criteria) ([]*query.TaskWithPhasesResult, error) {
-	sqlQuery := "SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, created_at, updated_at FROM tasks WHERE 1=1"
+	sqlQuery := "SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, reopen_reason, created_at, updated_at FROM tasks WHERE 1=1"
 	args := make([]any, 0)
 
 	for _, c := range criteria {
@@ -101,7 +101,7 @@ func (q *TaskWithPhasesQuerySQLite) List(criteria repository.Criteria) ([]*query
 	for rows.Next() {
 		task := &entity.Task{}
 		if err := rows.Scan(&task.ID, &task.Title, &task.Description, &task.CurrentPhase,
-			&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace,
+			&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace, &task.ReopenReason,
 			&task.CreatedAt, &task.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}

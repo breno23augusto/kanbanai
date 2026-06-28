@@ -16,6 +16,10 @@ type TaskOutput struct {
 	ErrorMessage string        `json:"error_message"`
 	// Workspace is the harness working directory for this task (empty = server default).
 	Workspace   string        `json:"workspace"`
+	// ReopenReason is the reason a downstream phase cited when it sent this
+	// task back for rework via reopen_phase. Empty on a first run; cleared
+	// again once the reworked lane advances forward.
+	ReopenReason string        `json:"reopen_reason"`
 	// Subtasks carries the per-subtask status so the board card can render
 	// live progress. Populated by ListTasks and GetTask.
 	Subtasks      []SubtaskDTO  `json:"subtasks"`

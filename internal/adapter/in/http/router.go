@@ -41,6 +41,9 @@ func SetupRoutes(r *gin.Engine, container *di.Container, webDir string) {
 
 		sseHandler := container.MustResolve("sseHandler").(*handler.SSEHandler)
 		api.GET("/events", sseHandler.Stream)
+
+		liveHandler := container.MustResolve("liveHandler").(*handler.LiveHandler)
+		api.GET("/tasks/:id/live", liveHandler.Stream)
 	}
 
 	mountFrontend(r, webDir)

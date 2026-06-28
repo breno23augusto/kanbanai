@@ -12,6 +12,7 @@ import (
 	"kanbanai/internal/adapter/in/http/handler"
 	eventimpl "kanbanai/internal/adapter/out/event"
 	"kanbanai/internal/adapter/out/harness"
+	"kanbanai/internal/adapter/out/livetail"
 	"kanbanai/internal/adapter/out/persistence/query"
 	"kanbanai/internal/adapter/out/persistence/repository"
 	"kanbanai/internal/adapter/out/persistence/sqlite"
@@ -89,8 +90,10 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 		cfg.Harness.DefaultTimeoutSec,
 		convertPhaseOverrides(cfg.Harness.Phases),
 	)
-	harnessAdapter := harness.NewAdapter(phaseConfigs, fmt.Sprintf("%d", cfg.MCP.Port), apiBaseURL, dispatcher)
+	liveStore := livetail.NewStore()
+	harnessAdapter := harness.NewAdapter(phaseConfigs, fmt.Sprintf("%d", cfg.MCP.Port), apiBaseURL, dispatcher, liveStore)
 	container.Register("harnessAdapter", harnessAdapter)
+	container.Register("liveStore", liveStore)
 
 	// 7. Use Cases
 	createTaskUC := usecase.NewCreateTask(taskRepo, dispatcher)
@@ -135,6 +138,7 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	container.Register("healthHandler", healthHandler)
 	container.Register("sseHandler", sseHandler)
 	container.Register("taskHandler", taskHandler)
+	container.Register("liveHandler", handler.NewLiveHandler(liveStore))
 
 	// 10. Event subscriptions (Observer pattern wiring)
 	dispatcher.Subscribe(event.TaskCreated, func(evt event.Event) {
@@ -152,6 +156,7 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 
 	dispatcher.Subscribe(event.TaskDeleted, func(evt event.Event) {
 		orchestrator.KillProcess(evt.TaskID)
+		liveStore.Delete(evt.TaskID)
 	})
 
 	// On harness failure (non-zero exit or timeout), drive the retry policy.

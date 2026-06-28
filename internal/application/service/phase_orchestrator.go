@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,7 @@ func (o *PhaseOrchestrator) AdvancePhase(ctx context.Context, taskID string) err
 	updated, err := o.retryUpdate(ctx, taskID, func(t *entity.Task) {
 		t.CurrentPhase = nextPhase
 		t.Status = entity.StatusPending
+		t.ReopenReason = "" // the rework was accepted forward; clear the feedback
 		t.UpdatedAt = time.Now()
 	})
 	if err != nil {
@@ -215,6 +217,19 @@ func (o *PhaseOrchestrator) dispatchPhase(ctx context.Context, task *entity.Task
 				"taskID", updated.ID, "phase", phase, "error", err)
 		} else {
 			data.Subtasks = text
+		}
+	}
+
+	// Rework lanes (doing, todo, planning) carry the reason a downstream phase
+	// sent the task back, plus that downstream review's output, so the next
+	// attempt addresses the concrete problems instead of re-running blind.
+	// Non-fatal: an empty result just omits the block (first run).
+	if phase == entity.PhaseDoing || phase == entity.PhaseTodo || phase == entity.PhasePlanning {
+		if text, err := o.loadReviewFeedback(ctx, updated, phase); err != nil {
+			slog.Warn("orchestrator: failed to load review feedback",
+				"taskID", updated.ID, "phase", phase, "error", err)
+		} else {
+			data.ReviewFeedback = text
 		}
 	}
 
@@ -300,6 +315,71 @@ func (o *PhaseOrchestrator) loadSubtasksText(ctx context.Context, taskID string)
 	for _, st := range items {
 		fmt.Fprintf(&b, "- [%s] %s (id: %s)\n", st.Status, st.Title, st.ID)
 	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// loadReviewFeedback assembles the rework guidance for a re-dispatched
+// implementation/refinement lane (doing/todo/planning): the explicit reason a
+// downstream phase cited when it called reopen_phase, plus the most recent
+// downstream review output (e.g. the validating FAIL report). This is what
+// makes a rework attempt smarter than the first run — the harness sees the
+// concrete problems to fix. Returns "" on a first run (no reopen reason and
+// no downstream output), in which case the prompt omits the block entirely.
+func (o *PhaseOrchestrator) loadReviewFeedback(ctx context.Context, task *entity.Task, phase entity.Phase) (string, error) {
+	reason := strings.TrimSpace(task.ReopenReason)
+
+	outputs, err := o.phaseOutputRepo.FindByFilters(ctx, repository.Criteria{
+		{Key: "task_id", Value: task.ID, Operator: repository.OpEquals},
+	})
+	if err != nil {
+		return "", fmt.Errorf("find phase outputs: %w", err)
+	}
+
+	// Downstream reviews are outputs from phases that come AFTER the current
+	// one (e.g. for doing: validating/testing). Keep the most recent per phase.
+	var downstream []*entity.PhaseOutput
+	seen := make(map[entity.Phase]*entity.PhaseOutput, len(outputs))
+	for _, po := range outputs {
+		if !po.Phase.After(phase) {
+			continue
+		}
+		if cur, ok := seen[po.Phase]; ok && !po.UpdatedAt.After(cur.UpdatedAt) {
+			continue
+		}
+		seen[po.Phase] = po
+	}
+	for _, po := range seen {
+		downstream = append(downstream, po)
+	}
+	// most recent first
+	sort.Slice(downstream, func(i, j int) bool {
+		return downstream[i].UpdatedAt.After(downstream[j].UpdatedAt)
+	})
+
+	if reason == "" && len(downstream) == 0 {
+		return "", nil
+	}
+
+	var b strings.Builder
+	if reason != "" {
+		b.WriteString("REASON FOR REWORK (cited by the reviewer who sent this task back):\n")
+		b.WriteString(reason)
+		b.WriteString("\n\n")
+	}
+	if len(downstream) > 0 {
+		b.WriteString("DOWNSTREAM REVIEW (the full review that triggered the rollback — address every item):\n")
+		for _, po := range downstream {
+			text := po.Output
+			if strings.TrimSpace(text) == "" {
+				text = po.Summary
+			}
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "[%s]\n%s\n\n", po.Phase, text)
+		}
+	}
+	b.WriteString("Address every issue above before calling complete_phase. Do NOT re-run the same implementation that produced these findings.")
 	return strings.TrimRight(b.String(), "\n"), nil
 }
 
@@ -466,7 +546,8 @@ func (o *PhaseOrchestrator) ReopenPhase(ctx context.Context, taskID string, targ
 	updated, err := o.retryUpdate(ctx, taskID, func(t *entity.Task) {
 		t.CurrentPhase = targetPhase
 		t.Status = entity.StatusPending
-		t.ErrorMessage = "" // rework is a fresh attempt; clear stale reason
+		t.ErrorMessage = ""     // rework is a fresh attempt; clear stale reason
+		t.ReopenReason = reason // carry the reviewer's feedback into the next dispatch
 		t.UpdatedAt = time.Now()
 	})
 	if err != nil {

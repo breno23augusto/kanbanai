@@ -16,17 +16,17 @@ import (
 )
 
 type TaskHandler struct {
-	createTaskUC         *usecase.CreateTask
-	updateTaskUC         *usecase.UpdateTask
-	deleteTaskUC         *usecase.DeleteTask
-	getTaskUC            *usecase.GetTask
-	listTasksUC          *usecase.ListTasks
-	advancePhaseUC       *usecase.AdvancePhase
-	createSubtasksUC     *usecase.CreateSubtasks
+	createTaskUC          *usecase.CreateTask
+	updateTaskUC          *usecase.UpdateTask
+	deleteTaskUC          *usecase.DeleteTask
+	getTaskUC             *usecase.GetTask
+	listTasksUC           *usecase.ListTasks
+	advancePhaseUC        *usecase.AdvancePhase
+	createSubtasksUC      *usecase.CreateSubtasks
 	updateSubtaskStatusUC *usecase.UpdateSubtaskStatus
-	savePhaseOutputUC    *usecase.SavePhaseOutput
-	orchestrator        port.PhaseOrchestratorPort
-	timelineQuery        query.TaskTimelineQuery
+	savePhaseOutputUC     *usecase.SavePhaseOutput
+	orchestrator          port.PhaseOrchestratorPort
+	timelineQuery         query.TaskTimelineQuery
 }
 
 func NewTaskHandler(
@@ -43,17 +43,17 @@ func NewTaskHandler(
 	timelineQuery query.TaskTimelineQuery,
 ) *TaskHandler {
 	return &TaskHandler{
-		createTaskUC:         createTaskUC,
-		updateTaskUC:         updateTaskUC,
-		deleteTaskUC:         deleteTaskUC,
-		getTaskUC:            getTaskUC,
-		listTasksUC:          listTasksUC,
-		advancePhaseUC:       advancePhaseUC,
-		createSubtasksUC:     createSubtasksUC,
+		createTaskUC:          createTaskUC,
+		updateTaskUC:          updateTaskUC,
+		deleteTaskUC:          deleteTaskUC,
+		getTaskUC:             getTaskUC,
+		listTasksUC:           listTasksUC,
+		advancePhaseUC:        advancePhaseUC,
+		createSubtasksUC:      createSubtasksUC,
 		updateSubtaskStatusUC: updateSubtaskStatusUC,
-		savePhaseOutputUC:    savePhaseOutputUC,
-		orchestrator:         orchestrator,
-		timelineQuery:        timelineQuery,
+		savePhaseOutputUC:     savePhaseOutputUC,
+		orchestrator:          orchestrator,
+		timelineQuery:         timelineQuery,
 	}
 }
 
@@ -154,6 +154,7 @@ func (h *TaskHandler) Get(c *gin.Context) {
 		Version:      result.Task.Version,
 		ErrorMessage: result.Task.ErrorMessage,
 		Workspace:    result.Task.Workspace,
+		ReopenReason: result.Task.ReopenReason,
 		CreatedAt:    result.Task.CreatedAt,
 		UpdatedAt:    result.Task.UpdatedAt,
 	}
@@ -367,10 +368,10 @@ func (h *TaskHandler) Reopen(c *gin.Context) {
 	}
 
 	response.OK(c, gin.H{
-		"task_id":       id,
-		"target_phase":  string(target),
-		"status":        "reopened",
-		"message":       "task moved back and target phase dispatched",
+		"task_id":      id,
+		"target_phase": string(target),
+		"status":       "reopened",
+		"message":      "task moved back and target phase dispatched",
 	})
 }
 

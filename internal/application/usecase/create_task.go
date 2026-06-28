@@ -3,10 +3,10 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"kanbanai/internal/application/dto"
 	"kanbanai/internal/domain/entity"
 	"kanbanai/internal/domain/event"
 	"kanbanai/internal/domain/repository"
-	"kanbanai/internal/application/dto"
 	"kanbanai/pkg/uid"
 	"time"
 )
@@ -44,9 +44,9 @@ func (uc *CreateTask) Execute(ctx context.Context, input dto.CreateTaskInput) (*
 	}
 
 	uc.dispatcher.Publish(event.Event{
-		Type:    event.TaskCreated,
-		TaskID:  task.ID,
-		Payload: task,
+		Type:      event.TaskCreated,
+		TaskID:    task.ID,
+		Payload:   task,
 		Timestamp: now,
 	})
 
@@ -60,6 +60,7 @@ func (uc *CreateTask) Execute(ctx context.Context, input dto.CreateTaskInput) (*
 		Version:      task.Version,
 		ErrorMessage: task.ErrorMessage,
 		Workspace:    task.Workspace,
+		ReopenReason: task.ReopenReason,
 		CreatedAt:    task.CreatedAt,
 		UpdatedAt:    task.UpdatedAt,
 	}, nil

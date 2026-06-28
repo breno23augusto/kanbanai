@@ -720,6 +720,88 @@ func TestOrchestratorReopenPhaseMovesBackAndRedispatches(t *testing.T) {
 	}
 }
 
+// TestOrchestratorReopenPhaseInjectsFeedbackIntoDoingPrompt verifies the core
+// "smarter rework" guarantee: when a downstream phase (validating) sends the
+// task back to doing via reopen_phase, the re-dispatched doing prompt carries
+// BOTH the explicit reopen reason AND the downstream review output, so the
+// next attempt addresses the concrete problems instead of re-running blind.
+func TestOrchestratorReopenPhaseInjectsFeedbackIntoDoingPrompt(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := newCapturingHarness()
+	phaseOutputs := newStatefulPhaseOutputRepo()
+	orch := NewPhaseOrchestrator(repo, phaseOutputs, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+
+	repo.tasks["t1"] = &entity.Task{
+		ID:           "t1",
+		Title:        "tic tac toe",
+		CurrentPhase: entity.PhaseValidating,
+		Status:       entity.StatusInProgress,
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	// A validating review (FAIL) was saved before the reopen.
+	_ = phaseOutputs.Create(context.Background(), &entity.PhaseOutput{
+		ID:        "po-v",
+		TaskID:    "t1",
+		Phase:     entity.PhaseValidating,
+		Output:    "Verdict: FAIL. Issue 1 — missing Go dependency gcassert.",
+		UpdatedAt: time.Now(),
+	})
+
+	if err := orch.ReopenPhase(context.Background(), "t1", entity.PhaseDoing, "fix the missing gcassert dep and the wrong count"); err != nil {
+		t.Fatalf("ReopenPhase error: %v", err)
+	}
+
+	// The reason must be persisted on the task so the doing dispatch can read it.
+	if got := repo.tasks["t1"].ReopenReason; got != "fix the missing gcassert dep and the wrong count" {
+		t.Errorf("ReopenReason = %q, want the reopen reason persisted", got)
+	}
+
+	harness.promptMu.Lock()
+	prompt := harness.prompts[entity.PhaseDoing]
+	harness.promptMu.Unlock()
+	if prompt == "" {
+		t.Fatalf("no prompt captured for doing phase")
+	}
+	if !contains(prompt, "REWORK FEEDBACK") {
+		t.Errorf("doing prompt missing REWORK FEEDBACK block\n--- prompt ---\n%s", prompt)
+	}
+	if !contains(prompt, "fix the missing gcassert dep and the wrong count") {
+		t.Errorf("doing prompt missing the reopen reason\n--- prompt ---\n%s", prompt)
+	}
+	if !contains(prompt, "missing Go dependency gcassert") {
+		t.Errorf("doing prompt missing the downstream validating review output\n--- prompt ---\n%s", prompt)
+	}
+}
+
+// TestOrchestratorAdvancePhaseClearsReopenReason verifies that once the reworked
+// lane advances forward, the persisted reopen reason is cleared — so a later,
+// unrelated failure doesn't re-inject stale feedback.
+func TestOrchestratorAdvancePhaseClearsReopenReason(t *testing.T) {
+	repo := newFakeTaskRepoSvc()
+	harness := &fakeHarness{}
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+
+	repo.tasks["t1"] = &entity.Task{
+		ID:           "t1",
+		CurrentPhase: entity.PhaseDoing,
+		Status:       entity.StatusInProgress,
+		ReopenReason: "stale reason from a prior reopen",
+		Version:      1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := orch.AdvancePhase(context.Background(), "t1"); err != nil {
+		t.Fatalf("AdvancePhase error: %v", err)
+	}
+
+	if got := repo.tasks["t1"].ReopenReason; got != "" {
+		t.Errorf("ReopenReason = %q after advance, want empty (cleared)", got)
+	}
+}
+
 func TestOrchestratorReopenPhaseRejectsNonPrecedingTarget(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}

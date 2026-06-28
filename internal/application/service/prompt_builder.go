@@ -38,14 +38,28 @@ report_progress. Finalize by executing complete_phase ONLY AFTER you have called
 
 If you cannot produce a coherent plan (requirements ambiguous, contradictory, or missing),
 DO NOT call complete_phase. Instead report_progress explaining the blocker and stop; the
-task will be retried or moved back automatically.`,
+task will be retried or moved back automatically.
+{{if .ReviewFeedback}}
+
+REWORK FEEDBACK (this task was sent back from a downstream review — read CAREFULLY):
+{{.ReviewFeedback}}
+
+Re-plan to address every issue above before producing subtasks.
+{{end}}`,
 			"todo": `You are a Product Owner / Tech Lead. Take the planning from the previous phase and refine the subtasks into smaller, detailed user stories for the task "{{.Title}}".
 {{.Description}}
 
 Update the outputs with update_task_output and finalize the refinement with complete_phase.
 
 If the planning output is insufficient to refine stories, send the task back to planning with
-reopen_phase (target_phase=planning) so the architect can redo it — do not invent missing requirements.`,
+reopen_phase (target_phase=planning) so the architect can redo it — do not invent missing requirements.
+{{if .ReviewFeedback}}
+
+REWORK FEEDBACK (this task was sent back from a downstream review — read CAREFULLY):
+{{.ReviewFeedback}}
+
+The refinement must address every issue above so the next implementation attempt can succeed.
+{{end}}`,
 			"doing": `You are a Senior Software Engineer. Implement the solution for the task "{{.Title}}" ({{.Description}}) in the repository.
 Produce clean and cohesive code.
 
@@ -53,6 +67,14 @@ Produce clean and cohesive code.
 
 SUBTASKS (the tracked checklist created in planning):
 {{.Subtasks}}
+{{if .ReviewFeedback}}
+
+REWORK FEEDBACK (this task was sent back from a downstream review — read CAREFULLY):
+{{.ReviewFeedback}}
+
+Treat the above as the primary directive for this attempt. Fix every issue it cites before completing.
+Do NOT re-submit the same implementation that produced these findings.
+{{end}}
 
 Work through the subtasks above. For EACH subtask:
   - Call "update_subtask_status" (task_id="{{.ID}}", phase="doing", status="in_progress") when you
@@ -165,6 +187,13 @@ type PromptData struct {
 	// empty when no subtasks have been created yet.
 	Subtasks string
 
+	// ReviewFeedback carries the reason a downstream phase sent this task back
+	// for rework (the reopen_phase reason) plus the downstream review output
+	// (e.g. the validating FAIL report). It is injected into the doing/todo/
+	// planning prompts on a re-dispatch so the next attempt addresses the
+	// concrete problems instead of re-running blind. Empty on a first run.
+	ReviewFeedback string
+
 	// FailureHandlingContract is the rendered, phase-agnostic instructions that
 	// teach the harness how to send a task back and how to fall back to HTTP
 	// when it has no MCP client. It is injected automatically by Build.
@@ -215,31 +244,28 @@ criteria are fully met. When you detect that an EARLIER phase produced work
 that is incorrect or incomplete, you MUST send the task back to that phase for
 rework — never call complete_phase to push a known failure forward.
 
-1) SENDING THE TASK BACK (preferred — use the tools)
+The KanbanAI lifecycle tools (get_task, create_subtasks, update_subtask_status,
+update_task_output, reopen_phase, complete_phase) are available to you as native
+tools. Use THEM to manage the flow — do NOT call the REST API directly via
+bash/curl/fetch. The harness only tracks phase finalization when you call the
+tools, so bypassing them (e.g. raw HTTP) leaves the flow in an inconsistent
+state. If a tool call fails with a transient error, retry it.
+
+1) SENDING THE TASK BACK (when an earlier phase is wrong/incomplete)
    Call the "reopen_phase" tool with:
      - task_id: "%TASK_ID%"
      - phase: "%CURRENT_PHASE%"          (your current phase)
      - target_phase: "%PREV_PHASE%"       (the earlier phase to reopen, e.g. "doing")
      - reason: a precise, actionable list of every problem to fix
    The target phase is re-dispatched automatically with your findings. After
-   calling reopen_phase, STOP your own work — do not also call complete_phase.
+calling reopen_phase, STOP your own work — do not also call complete_phase.
    The orchestrator guarantees target_phase precedes your current phase; if you
    need a different earlier phase, name it explicitly (e.g. "todo", "planning").
 
-2) HTTP FALLBACK (use this ONLY if the tools above are genuinely unavailable to you)
-   Send an HTTP POST to the KanbanAI REST API (no MCP SDK required):
-     POST %API_BASE_URL%/tasks/%TASK_ID%/reopen
-     Content-Type: application/json
-     { "target_phase": "%PREV_PHASE%", "reason": "<precise list of problems>" }
-   The API base URL is also available in the KANBANAI_API_BASE_URL env var.
-   This endpoint performs the exact same lane rollback + re-dispatch as the
-   reopen_phase tool, and likewise reports completion (when criteria ARE
-   met) via POST %API_BASE_URL%/tasks/%TASK_ID%/complete.
-
-3) WHEN CRITERIA ARE MET
+2) WHEN CRITERIA ARE MET
    Save your artifacts with the update_task_output tool, then call complete_phase
-   to advance (or POST %API_BASE_URL%/tasks/%TASK_ID%/complete as a fallback).
-   Use complete ONLY for a genuine pass; use reopen for any failure.
+   to advance the lane. Use complete ONLY for a genuine pass; use reopen for any
+   failure.
 `
 	repl := func(old, new string) { s = strings.ReplaceAll(s, old, new) }
 	repl("%TASK_ID%", taskID)

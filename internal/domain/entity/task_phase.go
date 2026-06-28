@@ -57,6 +57,12 @@ func (p Phase) Before(other Phase) bool {
 	return p.Index() >= 0 && other.Index() >= 0 && p.Index() < other.Index()
 }
 
+// After reports whether p follows other in PhaseOrder. A phase is never After
+// itself. Used to identify downstream reviews (e.g. validating is After doing).
+func (p Phase) After(other Phase) bool {
+	return p.Index() >= 0 && other.Index() >= 0 && p.Index() > other.Index()
+}
+
 func (p Phase) IsTerminal() bool {
 	return p == PhaseDone
 }

@@ -1,4 +1,5 @@
 // pi-harness.mjs — KanbanAI harness implemented with the pi SDK.
+import { writeSync } from "node:fs"; // synchronous writes to fd 2 so the live tail (livetail.Store) sees agent output in real time; Node's process.stderr buffers async and would delay the stream.
 //
 // pi has no built-in MCP client, so the KanbanAI phase operations (create_subtasks,
 // update_subtask_status, update_task_output, get_task, reopen_phase, complete_phase)
@@ -245,9 +246,39 @@ const { session } = await createAgentSession({
 });
 
 let output = "";
+// Stream the agent's live activity to fd 2 (stderr) so the KanbanAI live tail
+// (livetail.Store, mirrored from the harness pipe) shows what the agent is
+// actually doing — assistant prose, reasoning, and tool calls — in real time,
+// not just this wrapper's own log lines. writeSync flushes synchronously.
+let lastBlockType = null;
+function emit(s) { try { writeSync(2, s); } catch {} }
 session.subscribe((event) => {
-  if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-    output += event.assistantMessageEvent.delta;
+  if (event.type !== "message_update") return;
+  const ev = event.assistantMessageEvent;
+  if (!ev) return;
+  switch (ev.type) {
+    case "text_delta":
+      emit(ev.delta);
+      output += ev.delta;
+      lastBlockType = "text";
+      break;
+    case "thinking_delta":
+      // Reasoning models (e.g. deepseek) emit most of their work as thinking —
+      // stream it too so the operator sees the agent's reasoning live.
+      emit(ev.delta);
+      lastBlockType = "thinking";
+      break;
+    case "text_start":
+    case "thinking_start":
+      // separate consecutive blocks for readability
+      if (lastBlockType && lastBlockType !== ev.type.replace("_start", "")) emit("\n");
+      break;
+    case "toolcall_end": {
+      const name = ev.toolCall?.name;
+      if (name) emit(`\n\n▸ tool: ${name}\n`);
+      lastBlockType = "tool";
+      break;
+    }
   }
 });
 
@@ -281,13 +312,29 @@ async function persistOutput() {
 }
 
 async function fallbackComplete() {
+  // The agent may have finalized the phase itself by calling complete_phase /
+  // reopen_phase directly (the tools set phaseFinalized), in which case we skip.
+  // But if it bypassed the tools, phaseFinalized stays null even though the lane
+  // already moved. Re-fetch the task: if the current phase is no longer the one
+  // we were running, the agent already advanced/reopened it — do nothing.
+  try {
+    const r = await api("GET", `/tasks/${taskId}`);
+    const cur = (r.data && (r.data.task?.current_phase ?? r.data.current_phase)) || (r.data && r.data.current_phase);
+    if (cur && cur !== phase) {
+      console.error(`pi-harness: skipping auto-complete — phase already ${cur} (agent finalized via tool)`);
+      return;
+    }
+  } catch (e) {
+    console.error(`pi-harness: pre-complete task check failed: ${e.message}`);
+  }
   const summary = output.trim().slice(-800);
   try {
     await api("POST", `/tasks/${taskId}/complete`, { phase, summary });
     console.error("pi-harness: auto-completed phase (agent did not finalize)");
   } catch (e) {
     console.error(`pi-harness: auto-complete failed: ${e.message}`);
-    process.exit(1);
+    // Don't fail the process: a spurious 400 (phase already advanced via a path
+    // we couldn't detect) must not trigger a retry storm that exhausts attempts.
   }
 }
 

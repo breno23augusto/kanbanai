@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"sync"
 	"time"
 
+	"kanbanai/internal/adapter/out/livetail"
 	"kanbanai/internal/domain/entity"
 	"kanbanai/internal/domain/event"
 )
@@ -16,6 +18,7 @@ type Adapter struct {
 	configs         map[entity.Phase]entity.PhaseConfig
 	builder         *CommandBuilder
 	dispatcher      event.Dispatcher
+	liveStore       *livetail.Store
 	processRegistry map[string]*exec.Cmd
 	killed          map[string]struct{}
 	mu              sync.RWMutex
@@ -26,11 +29,13 @@ func NewAdapter(
 	mcpPort string,
 	apiBaseURL string,
 	dispatcher event.Dispatcher,
+	liveStore *livetail.Store,
 ) *Adapter {
 	return &Adapter{
 		configs:         configs,
 		builder:         NewCommandBuilder(mcpPort, apiBaseURL),
 		dispatcher:      dispatcher,
+		liveStore:       liveStore,
 		processRegistry: make(map[string]*exec.Cmd),
 		killed:          make(map[string]struct{}),
 	}
@@ -100,12 +105,13 @@ func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.
 		return fmt.Errorf("failed to build command: %w", err)
 	}
 
-	// Capture the harness stdout/stderr so a non-zero exit (or timeout) carries
-	// a human-readable reason instead of a bare "exit status 1". Without this
-	// the frontend has nothing to explain why a phase failed (SPEC §32.3).
+	// Open a fresh live stream for this run so the operator can watch the
+	// agent work in real time (each Dispatch resets the tail). The bytes.Buffer
+	// is kept for the failure-reason tail; livetail mirrors the same bytes live.
+	liveStream := a.liveStore.Open(task.ID)
 	output := &bytes.Buffer{}
-	cmd.Stdout = output
-	cmd.Stderr = output
+	cmd.Stdout = io.MultiWriter(output, liveStream)
+	cmd.Stderr = io.MultiWriter(output, liveStream)
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -113,13 +119,14 @@ func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.
 	}
 
 	a.RegisterProcess(task.ID, cmd)
-	go a.monitorProcess(cmd, cancel, task.ID, phase, output)
+	go a.monitorProcess(cmd, cancel, task.ID, phase, output, liveStream)
 	return nil
 }
 
-func (a *Adapter) monitorProcess(cmd *exec.Cmd, cancel context.CancelFunc, taskID string, phase entity.Phase, output *bytes.Buffer) {
+func (a *Adapter) monitorProcess(cmd *exec.Cmd, cancel context.CancelFunc, taskID string, phase entity.Phase, output *bytes.Buffer, liveStream *livetail.Stream) {
 	defer a.UnregisterProcess(taskID)
 	defer cancel()
+	defer liveStream.End()
 
 	err := cmd.Wait()
 

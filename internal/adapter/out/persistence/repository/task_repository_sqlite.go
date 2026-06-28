@@ -17,12 +17,12 @@ func NewTaskRepositorySQLite(db *sql.DB) *TaskRepositorySQLite {
 }
 
 func (r *TaskRepositorySQLite) Create(ctx context.Context, task *entity.Task) error {
-	query := `INSERT INTO tasks (id, title, description, current_phase, status, priority, version, error_message, workspace, created_at, updated_at)
-	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO tasks (id, title, description, current_phase, status, priority, version, error_message, workspace, reopen_reason, created_at, updated_at)
+	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := r.db.ExecContext(ctx, query,
 		task.ID, task.Title, task.Description, string(task.CurrentPhase),
-		string(task.Status), task.Priority, task.Version, task.ErrorMessage, task.Workspace,
+		string(task.Status), task.Priority, task.Version, task.ErrorMessage, task.Workspace, task.ReopenReason,
 		task.CreatedAt, task.UpdatedAt,
 	)
 	if err != nil {
@@ -34,12 +34,12 @@ func (r *TaskRepositorySQLite) Create(ctx context.Context, task *entity.Task) er
 func (r *TaskRepositorySQLite) Update(ctx context.Context, task *entity.Task) error {
 	query := `UPDATE tasks
 	           SET title = ?, description = ?, current_phase = ?, status = ?, priority = ?,
-	               error_message = ?, workspace = ?, version = version + 1, updated_at = ?
+	               error_message = ?, workspace = ?, reopen_reason = ?, version = version + 1, updated_at = ?
 	           WHERE id = ? AND version = ?`
 
 	result, err := r.db.ExecContext(ctx, query,
 		task.Title, task.Description, string(task.CurrentPhase),
-		string(task.Status), task.Priority, task.ErrorMessage, task.Workspace, task.UpdatedAt,
+		string(task.Status), task.Priority, task.ErrorMessage, task.Workspace, task.ReopenReason, task.UpdatedAt,
 		task.ID, task.Version,
 	)
 	if err != nil {
@@ -67,13 +67,13 @@ func (r *TaskRepositorySQLite) Delete(ctx context.Context, id string) error {
 }
 
 func (r *TaskRepositorySQLite) Find(ctx context.Context, id string) (*entity.Task, error) {
-	query := `SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, created_at, updated_at
+	query := `SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, reopen_reason, created_at, updated_at
 	           FROM tasks WHERE id = ?`
 
 	row := r.db.QueryRowContext(ctx, query, id)
 	task := &entity.Task{}
 	err := row.Scan(&task.ID, &task.Title, &task.Description, &task.CurrentPhase,
-		&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace,
+		&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace, &task.ReopenReason,
 		&task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -86,7 +86,7 @@ func (r *TaskRepositorySQLite) Find(ctx context.Context, id string) (*entity.Tas
 }
 
 func (r *TaskRepositorySQLite) FindByFilters(ctx context.Context, criteria repository.Criteria) ([]*entity.Task, error) {
-	query := "SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, created_at, updated_at FROM tasks WHERE 1=1"
+	query := "SELECT id, title, description, current_phase, status, priority, version, error_message, workspace, reopen_reason, created_at, updated_at FROM tasks WHERE 1=1"
 	args := make([]any, 0)
 
 	for _, c := range criteria {
@@ -106,7 +106,7 @@ func (r *TaskRepositorySQLite) FindByFilters(ctx context.Context, criteria repos
 	for rows.Next() {
 		task := &entity.Task{}
 		if err := rows.Scan(&task.ID, &task.Title, &task.Description, &task.CurrentPhase,
-			&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace,
+			&task.Status, &task.Priority, &task.Version, &task.ErrorMessage, &task.Workspace, &task.ReopenReason,
 			&task.CreatedAt, &task.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
