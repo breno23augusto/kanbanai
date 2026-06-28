@@ -64,6 +64,11 @@ const (
 	SubtaskCreated EventType = "subtask.created"
 	SubtaskUpdated EventType = "subtask.updated"
 
+	// Phase config events — fired when an operator edits per-lane harness/model
+	// settings from the UI. The SSE broker forwards it so the frontend can
+	// refresh the effective values without a manual reload.
+	PhaseConfigsUpdated EventType = "phase_configs.updated"
+
 	// System events
 	SystemHealthCheck      EventType = "system.health.check"
 	SystemError            EventType = "system.error"

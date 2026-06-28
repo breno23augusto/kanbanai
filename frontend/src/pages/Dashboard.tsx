@@ -1,9 +1,13 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { Box, Typography, Button, IconButton, Tooltip } from '@mui/material';
+import { useNavigate } from 'react-router-dom';
 import AddIcon from '@mui/icons-material/Add';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import SettingsIcon from '@mui/icons-material/Tune';
+import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { CreateTaskDialog } from '../components/CreateTaskDialog';
+import { PhaseConfigDialog } from '../components/PhaseConfigDialog';
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer';
 import { Lamp } from '../components/Lamp';
 import { useTasks } from '../hooks/useTasks';
@@ -31,8 +35,10 @@ const TALLY_ORDER: { status: Status; label: string }[] = [
 const mono = '"JetBrains Mono", monospace';
 
 export const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
   const { tasks, loading, createTask, reload } = useTasks();
   const [createOpen, setCreateOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [now, setNow] = useState(() => new Date());
 
@@ -241,6 +247,12 @@ export const Dashboard: React.FC = () => {
             </IconButton>
           </Tooltip>
 
+          <Tooltip title="Lane configuration">
+            <IconButton size="small" onClick={() => setConfigOpen(true)} sx={{ color: tokens.ink.dim }}>
+              <SettingsIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+
           <Button
             variant="outlined"
             size="small"
@@ -299,6 +311,7 @@ export const Dashboard: React.FC = () => {
       </Box>
 
       <CreateTaskDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreate={handleCreate} />
+      <PhaseConfigDialog open={configOpen} onClose={() => setConfigOpen(false)} />
 
       <TaskDetailDrawer task={selectedTask} open={!!selectedTask} onClose={() => setSelectedTaskId(null)} onTaskChanged={reload} />
     </Box>

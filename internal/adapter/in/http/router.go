@@ -44,6 +44,10 @@ func SetupRoutes(r *gin.Engine, container *di.Container, webDir string) {
 
 		liveHandler := container.MustResolve("liveHandler").(*handler.LiveHandler)
 		api.GET("/tasks/:id/live", liveHandler.Stream)
+
+		phaseConfigHandler := container.MustResolve("phaseConfigHandler").(*handler.PhaseConfigHandler)
+		api.GET("/config/phases", phaseConfigHandler.List)
+		api.PUT("/config/phases", phaseConfigHandler.Update)
 	}
 
 	mountFrontend(r, webDir)

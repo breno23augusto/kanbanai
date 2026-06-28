@@ -1,4 +1,5 @@
 import { Task, TaskDetail } from '../types/task';
+import { PhaseConfig, PhaseConfigInput } from '../types/config';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -56,4 +57,14 @@ export const api = {
 
   resumeTask: (id: string) =>
     request<void>(tasksPath(id) + '/resume', { method: 'POST' }),
+
+  // Per-lane harness/model configuration.
+  getPhaseConfigs: () =>
+    request<{ phases: PhaseConfig[] }>('/api/v1/config/phases'),
+
+  updatePhaseConfigs: (phases: PhaseConfigInput[]) =>
+    request<{ phases: PhaseConfig[] }>('/api/v1/config/phases', {
+      method: 'PUT',
+      body: JSON.stringify({ phases }),
+    }),
 };

@@ -90,8 +90,21 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 		cfg.Harness.DefaultTimeoutSec,
 		convertPhaseOverrides(cfg.Harness.Phases),
 	)
+	phaseConfigRepo := repository.NewPhaseConfigRepositorySQLite(db)
+	container.Register("phaseConfigRepo", phaseConfigRepo)
+
+	// The provider is the runtime-mutable source of truth the harness adapter
+	// consults on every Dispatch. It merges env defaults (immutable) with DB
+	// overrides (UI-editable); a Reload at boot loads any saved overrides so
+	// UI edits survive restarts.
+	phaseConfigProvider := harness.NewPhaseConfigProvider(phaseConfigs, phaseConfigRepo)
+	if err := phaseConfigProvider.Reload(context.Background()); err != nil {
+		return nil, fmt.Errorf("load phase config overrides: %w", err)
+	}
+	container.Register("phaseConfigProvider", phaseConfigProvider)
+
 	liveStore := livetail.NewStore()
-	harnessAdapter := harness.NewAdapter(phaseConfigs, fmt.Sprintf("%d", cfg.MCP.Port), apiBaseURL, dispatcher, liveStore)
+	harnessAdapter := harness.NewAdapter(phaseConfigProvider, fmt.Sprintf("%d", cfg.MCP.Port), apiBaseURL, dispatcher, liveStore)
 	container.Register("harnessAdapter", harnessAdapter)
 	container.Register("liveStore", liveStore)
 
@@ -106,6 +119,8 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	savePhaseOutputUC := usecase.NewSavePhaseOutput(phaseOutputRepo, dispatcher)
 	createSubtasksUC := usecase.NewCreateSubtasks(subtaskRepo, dispatcher)
 	updateSubtaskStatusUC := usecase.NewUpdateSubtaskStatus(subtaskRepo, dispatcher)
+	getPhaseConfigsUC := usecase.NewGetPhaseConfigs(phaseConfigProvider)
+	updatePhaseConfigsUC := usecase.NewUpdatePhaseConfigs(phaseConfigProvider, dispatcher)
 
 	container.Register("createTaskUseCase", createTaskUC)
 	container.Register("updateTaskUseCase", updateTaskUC)
@@ -117,6 +132,8 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	container.Register("savePhaseOutputUseCase", savePhaseOutputUC)
 	container.Register("createSubtasksUseCase", createSubtasksUC)
 	container.Register("updateSubtaskStatusUseCase", updateSubtaskStatusUC)
+	container.Register("getPhaseConfigsUseCase", getPhaseConfigsUC)
+	container.Register("updatePhaseConfigsUseCase", updatePhaseConfigsUC)
 
 	// 8. Phase Orchestrator (created before handlers so they can depend on it)
 	orchestrator := service.NewPhaseOrchestrator(
@@ -139,6 +156,7 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	container.Register("sseHandler", sseHandler)
 	container.Register("taskHandler", taskHandler)
 	container.Register("liveHandler", handler.NewLiveHandler(liveStore))
+	container.Register("phaseConfigHandler", handler.NewPhaseConfigHandler(getPhaseConfigsUC, updatePhaseConfigsUC))
 
 	// 10. Event subscriptions (Observer pattern wiring)
 	dispatcher.Subscribe(event.TaskCreated, func(evt event.Event) {
@@ -174,11 +192,7 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 			slog.Error("bootstrap: harness error phase type assertion failed", "taskID", evt.TaskID)
 			return
 		}
-		phaseCfg, ok := phaseConfigs[phase]
-		if !ok {
-			slog.Error("bootstrap: no config for failed phase", "taskID", evt.TaskID, "phase", phase)
-			return
-		}
+		phaseCfg := phaseConfigProvider.Get(phase)
 		// Compose the reason from the process wait error + the captured harness
 		// stdout/stderr so HandleRetry can persist it on the task (SPEC §32.3).
 		waitErr, _ := payload["error"].(string)

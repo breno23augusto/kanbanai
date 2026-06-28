@@ -12,10 +12,11 @@ import (
 	"kanbanai/internal/adapter/out/livetail"
 	"kanbanai/internal/domain/entity"
 	"kanbanai/internal/domain/event"
+	"kanbanai/internal/domain/port"
 )
 
 type Adapter struct {
-	configs         map[entity.Phase]entity.PhaseConfig
+	provider        port.PhaseConfigProvider
 	builder         *CommandBuilder
 	dispatcher      event.Dispatcher
 	liveStore       *livetail.Store
@@ -25,14 +26,14 @@ type Adapter struct {
 }
 
 func NewAdapter(
-	configs map[entity.Phase]entity.PhaseConfig,
+	provider port.PhaseConfigProvider,
 	mcpPort string,
 	apiBaseURL string,
 	dispatcher event.Dispatcher,
 	liveStore *livetail.Store,
 ) *Adapter {
 	return &Adapter{
-		configs:         configs,
+		provider:        provider,
 		builder:         NewCommandBuilder(mcpPort, apiBaseURL),
 		dispatcher:      dispatcher,
 		liveStore:       liveStore,
@@ -77,11 +78,7 @@ func (a *Adapter) KillProcess(taskID string) {
 }
 
 func (a *Adapter) Dispatch(ctx context.Context, task *entity.Task, phase entity.Phase, prompt string) error {
-	config, ok := a.configs[phase]
-	if !ok {
-		return fmt.Errorf("no config for phase: %s", phase)
-	}
-
+	config := a.provider.Get(phase)
 	a.dispatcher.Publish(event.Event{
 		Type:      event.HarnessCommandDispatched,
 		TaskID:    task.ID,

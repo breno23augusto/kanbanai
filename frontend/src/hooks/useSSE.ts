@@ -43,6 +43,7 @@ const EVENT_TYPES = [
   'phase.testing.retry',
   'phase.done.reached',
   'harness.error.occurred',
+  'phase_configs.updated',
 ] as const;
 
 export function useSSE(onEvent: (event: SSEEvent) => void) {
