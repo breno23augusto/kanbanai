@@ -8,6 +8,7 @@ import (
 type TaskWithPhasesResult struct {
 	Task         entity.Task
 	PhaseOutputs []entity.PhaseOutput
+	Subtasks     []entity.Subtask
 }
 
 type TaskWithPhasesQuery interface {

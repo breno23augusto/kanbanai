@@ -19,6 +19,8 @@ const EVENT_TYPES = [
   'lane.transition.completed',
   'lane.transition.failed',
   'lane.reopened',
+  'subtask.created',
+  'subtask.updated',
   'phase.planning.started',
   'phase.planning.completed',
   'phase.planning.failed',

@@ -27,8 +27,14 @@ func NewPromptBuilder(apiBaseURL string) *PromptBuilder {
 			"planning": `You are a software architect. Analyze the requirements for the task "{{.Title}}".
 {{.Description}}
 
-Identify and save subtasks and acceptance criteria using the update_task_output MCP tool.
-Report progress with report_progress. Finalize by executing complete_phase.
+Your PRIMARY deliverable is a concrete breakdown: identify the subtasks and acceptance criteria
+that define "done" for this task, then persist them with the "create_subtasks" MCP tool
+(task_id="{{.ID}}", phase="planning"). Each subtask title must be a short, verifiable unit of work.
+These subtasks drive the board card and the doing phase — without them the team has no tracked
+checklist, so create_subtasks is mandatory before completing this phase.
+
+Optionally also save a richer plan/notes with update_task_output. Report progress with
+report_progress. Finalize by executing complete_phase ONLY AFTER you have called create_subtasks.
 
 If you cannot produce a coherent plan (requirements ambiguous, contradictory, or missing),
 DO NOT call complete_phase. Instead report_progress explaining the blocker and stop; the
@@ -41,9 +47,20 @@ Update the outputs with update_task_output and finalize the refinement with comp
 If the planning output is insufficient to refine stories, send the task back to planning with
 reopen_phase (target_phase=planning) so the architect can redo it — do not invent missing requirements.`,
 			"doing": `You are a Senior Software Engineer. Implement the solution for the task "{{.Title}}" ({{.Description}}) in the repository.
-Produce clean and cohesive code. Save the implementation report and modified files with update_task_output.
+Produce clean and cohesive code.
 
-When you finish, finalize with complete_phase ONLY IF the implementation is complete and coherent.
+SUBTASKS (the tracked checklist created in planning):
+{{.Subtasks}}
+
+Work through the subtasks above. For EACH subtask:
+  - Call "update_subtask_status" (task_id="{{.ID}}", phase="doing", status="in_progress") when you
+    start it, and again with status="completed" the moment it is genuinely done. This is how the
+    board card shows live per-subtask progress — update it as you go, not all at the end.
+  - If the subtask list is empty, call "get_task" to confirm; if still empty, proceed by implementing
+    the task directly and note it in your report.
+
+Save the implementation report and modified files with update_task_output. Finalize with
+complete_phase ONLY IF the implementation is complete and coherent (every subtask completed).
 If the refined subtasks (todo phase) are wrong or block a correct implementation, send the task back
 to todo with reopen_phase (target_phase=todo) instead of forcing a broken implementation.
 
@@ -133,6 +150,13 @@ type PromptData struct {
 	// modified files. It is the concrete record of "what was implemented"
 	// that the validation phase must evaluate. May be empty.
 	ImplementationReport string
+
+	// Subtasks is the rendered list of the task's tracked subtasks (created in
+	// planning) with their current status. It is injected into the doing/
+	// validating/testing prompts so the harness knows exactly what to work on
+	// and can report per-subtask progress via update_subtask_status. May be
+	// empty when no subtasks have been created yet.
+	Subtasks string
 
 	// FailureHandlingContract is the rendered, phase-agnostic instructions that
 	// teach the harness how to send a task back and how to fall back to HTTP

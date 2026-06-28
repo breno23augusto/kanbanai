@@ -58,6 +58,12 @@ const (
 	HarnessSessionStarted      EventType = "harness.session.started"
 	HarnessSessionEnded        EventType = "harness.session.ended"
 
+	// Subtask events — fired when the harness creates subtasks (planning) or
+	// reports a sub-activity complete (doing/validating/testing) via MCP. The
+	// SSE broker forwards them so the card and drawer update live.
+	SubtaskCreated EventType = "subtask.created"
+	SubtaskUpdated EventType = "subtask.updated"
+
 	// System events
 	SystemHealthCheck      EventType = "system.health.check"
 	SystemError            EventType = "system.error"

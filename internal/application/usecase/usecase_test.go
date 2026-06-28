@@ -122,6 +122,69 @@ func (r *fakePhaseOutputRepo) FindByFilters(ctx context.Context, criteria reposi
 	return result, nil
 }
 
+type fakeSubtaskRepo struct {
+	mu       sync.Mutex
+	subtasks map[string]*entity.Subtask
+}
+
+func newFakeSubtaskRepo() *fakeSubtaskRepo {
+	return &fakeSubtaskRepo{subtasks: make(map[string]*entity.Subtask)}
+}
+
+func (r *fakeSubtaskRepo) Create(ctx context.Context, st *entity.Subtask) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.subtasks[st.ID] = st
+	return nil
+}
+
+func (r *fakeSubtaskRepo) Update(ctx context.Context, st *entity.Subtask) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.subtasks[st.ID] = st
+	return nil
+}
+
+func (r *fakeSubtaskRepo) Delete(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.subtasks, id)
+	return nil
+}
+
+func (r *fakeSubtaskRepo) DeleteByTask(ctx context.Context, taskID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, st := range r.subtasks {
+		if st.TaskID == taskID {
+			delete(r.subtasks, id)
+		}
+	}
+	return nil
+}
+
+func (r *fakeSubtaskRepo) Find(ctx context.Context, id string) (*entity.Subtask, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.subtasks[id]
+	if !ok {
+		return nil, fmt.Errorf("not found")
+	}
+	return st, nil
+}
+
+func (r *fakeSubtaskRepo) FindByTask(ctx context.Context, taskID string) ([]*entity.Subtask, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result []*entity.Subtask
+	for _, st := range r.subtasks {
+		if st.TaskID == taskID {
+			result = append(result, st)
+		}
+	}
+	return result, nil
+}
+
 type recordingDispatcher struct {
 	events []event.Event
 	mu     sync.Mutex

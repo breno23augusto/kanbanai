@@ -157,9 +157,26 @@ func (h *TaskHandler) Get(c *gin.Context) {
 		})
 	}
 
+	subtasks := make([]dto.SubtaskDTO, 0, len(result.Subtasks))
+	for _, st := range result.Subtasks {
+		st := st // capture
+		subtasks = append(subtasks, dto.SubtaskDTO{
+			ID:        st.ID,
+			TaskID:    st.TaskID,
+			Title:     st.Title,
+			Status:    st.Status,
+			Order:     st.Order,
+			CreatedAt: st.CreatedAt,
+			UpdatedAt: st.UpdatedAt,
+		})
+	}
+	taskOutput.Subtasks = subtasks
+	taskOutput.SubtaskSummary = dto.SubtaskSummaryFrom(result.Subtasks)
+
 	response.OK(c, gin.H{
 		"task":          taskOutput,
 		"phase_outputs": phaseOutputs,
+		"subtasks":      subtasks,
 	})
 }
 

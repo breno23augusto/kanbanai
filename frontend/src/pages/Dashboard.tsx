@@ -12,7 +12,7 @@ import { Status } from '../types/task';
 import { SSEEvent } from '../types/event';
 import { tokens } from '../theme/theme';
 
-const RELOAD_PREFIXES = ['task.', 'lane.', 'phase.', 'harness.error'];
+const RELOAD_PREFIXES = ['task.', 'lane.', 'phase.', 'subtask.', 'harness.error'];
 
 function shouldReload(type: string): boolean {
   if (type === 'phase.done.reached') return true;

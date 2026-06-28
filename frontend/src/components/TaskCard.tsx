@@ -1,8 +1,8 @@
 import React from 'react';
-import { Task } from '../types/task';
+import { Task, Subtask } from '../types/task';
 import { Lamp } from './Lamp';
 import { tokens } from '../theme/theme';
-import { Box, Typography } from '@mui/material';
+import { Box, Typography, Tooltip } from '@mui/material';
 
 interface TaskCardProps {
   task: Task;
@@ -17,6 +17,56 @@ const STATUS_LABEL: Record<string, string> = {
   failed: 'failed',
   cancelled: 'halt',
   paused: 'paused',
+};
+
+const SUBTASK_DOT: Record<string, string> = {
+  completed: tokens.signal.sage,
+  in_progress: tokens.signal.cyan,
+  pending: tokens.border.strong,
+};
+
+const SubtaskStrip: React.FC<{ subtasks: Subtask[] }> = ({ subtasks }) => {
+  if (!subtasks || subtasks.length === 0) return null;
+  const done = subtasks.filter((s) => s.status === 'completed').length;
+  const total = subtasks.length;
+  const allDone = done === total;
+  const color = allDone ? tokens.signal.sage : done === 0 ? tokens.ink.faint : tokens.signal.cyan;
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 1, maxWidth: '100%' }}>
+      <Typography
+        sx={{
+          fontFamily: '"JetBrains Mono", monospace',
+          fontSize: '0.6rem',
+          letterSpacing: '0.06em',
+          color,
+          textTransform: 'uppercase',
+          flexShrink: 0,
+        }}
+      >
+        {done}/{total}
+      </Typography>
+      <Box sx={{ display: 'flex', gap: 0.25, flexWrap: 'nowrap', overflow: 'hidden' }}>
+        {subtasks.slice(0, 12).map((s) => (
+          <Tooltip key={s.id} title={s.title} arrow>
+            <Box
+              sx={{
+                width: 7,
+                height: 7,
+                borderRadius: 0.5,
+                bgcolor: SUBTASK_DOT[s.status] ?? tokens.border.strong,
+                flexShrink: 0,
+              }}
+            />
+          </Tooltip>
+        ))}
+        {subtasks.length > 12 && (
+          <Typography sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.56rem', color: tokens.ink.faint, ml: 0.25 }}>
+            +{subtasks.length - 12}
+          </Typography>
+        )}
+      </Box>
+    </Box>
+  );
 };
 
 export const TaskCard: React.FC<TaskCardProps> = ({ task, phaseLamp, onClick }) => {
@@ -117,6 +167,8 @@ export const TaskCard: React.FC<TaskCardProps> = ({ task, phaseLamp, onClick }) 
           </Typography>
         )}
       </Box>
+
+      <SubtaskStrip subtasks={task.subtasks ?? []} />
     </Box>
   );
 };

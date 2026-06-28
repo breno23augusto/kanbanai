@@ -78,6 +78,18 @@ func (r *fakePhaseOutputRepoSvc) FindByFilters(ctx context.Context, criteria rep
 	return nil, nil
 }
 
+// fakeSubtaskRepoSvc is a no-op SubtaskRepository for orchestrator tests that
+// don't exercise subtask injection. FindByTask returns nil so the prompt gets
+// the "(no subtasks created yet)" placeholder.
+type fakeSubtaskRepoSvc struct{}
+
+func (r *fakeSubtaskRepoSvc) Create(ctx context.Context, st *entity.Subtask) error                  { return nil }
+func (r *fakeSubtaskRepoSvc) Update(ctx context.Context, st *entity.Subtask) error                  { return nil }
+func (r *fakeSubtaskRepoSvc) Delete(ctx context.Context, id string) error                            { return nil }
+func (r *fakeSubtaskRepoSvc) DeleteByTask(ctx context.Context, taskID string) error                 { return nil }
+func (r *fakeSubtaskRepoSvc) Find(ctx context.Context, id string) (*entity.Subtask, error)          { return nil, nil }
+func (r *fakeSubtaskRepoSvc) FindByTask(ctx context.Context, taskID string) ([]*entity.Subtask, error) { return nil, nil }
+
 // statefulPhaseOutputRepo is a fake that actually stores phase outputs so the
 // orchestrator can exercise populatePriorContext end-to-end.
 type statefulPhaseOutputRepo struct {
@@ -203,7 +215,7 @@ func TestOrchestratorStartFlow(t *testing.T) {
 	disp := &recordingDisp{}
 	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, pb, disp)
 
 	task := &entity.Task{
 		ID:           "t1",
@@ -245,7 +257,7 @@ func TestOrchestratorAdvancePhaseTransitionsLane(t *testing.T) {
 	disp := &recordingDisp{}
 	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, pb, disp)
 
 	task := &entity.Task{
 		ID:           "t1",
@@ -299,7 +311,7 @@ func TestOrchestratorValidatingPromptCarriesPriorContext(t *testing.T) {
 	disp := &recordingDisp{}
 	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
-	orch := NewPhaseOrchestrator(repo, outRepo, harness, pb, disp)
+	orch := NewPhaseOrchestrator(repo, outRepo, &fakeSubtaskRepoSvc{}, harness, pb, disp)
 
 	now := time.Now()
 	task := &entity.Task{
@@ -371,7 +383,7 @@ func TestOrchestratorValidatingPromptHandlesMissingOutputs(t *testing.T) {
 	disp := &recordingDisp{}
 	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
-	orch := NewPhaseOrchestrator(repo, outRepo, harness, pb, disp)
+	orch := NewPhaseOrchestrator(repo, outRepo, &fakeSubtaskRepoSvc{}, harness, pb, disp)
 
 	now := time.Now()
 	task := &entity.Task{
@@ -413,7 +425,7 @@ func TestOrchestratorAdvancePhaseReachesDone(t *testing.T) {
 	disp := &recordingDisp{}
 	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, pb, disp)
 
 	task := &entity.Task{
 		ID:           "t1",
@@ -460,7 +472,7 @@ func TestOrchestratorAdvancePhaseReachesDone(t *testing.T) {
 
 func TestOrchestratorKillProcess(t *testing.T) {
 	harness := &fakeHarness{}
-	orch := NewPhaseOrchestrator(newFakeTaskRepoSvc(), &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+	orch := NewPhaseOrchestrator(newFakeTaskRepoSvc(), &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
 
 	orch.KillProcess("t1")
 
@@ -476,7 +488,7 @@ func TestOrchestratorRestartPhaseRedpatchesAndResetsAttempts(t *testing.T) {
 	disp := &recordingDisp{}
 	pb := NewPromptBuilder("http://localhost:8080/api/v1")
 
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, pb, disp)
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, pb, disp)
 
 	task := &entity.Task{
 		ID:           "t1",
@@ -518,7 +530,7 @@ func TestOrchestratorPauseTaskKillsProcessAndMarksPaused(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
 	disp := &recordingDisp{}
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
 
 	task := &entity.Task{
 		ID:           "t1",
@@ -566,7 +578,7 @@ func TestOrchestratorPauseTaskKillsProcessAndMarksPaused(t *testing.T) {
 func TestOrchestratorPauseTaskRejectsNonRunningTask(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
 
 	repo.tasks["t1"] = &entity.Task{
 		ID:           "t1",
@@ -592,7 +604,7 @@ func TestOrchestratorResumeTaskRedispatchesAndEmitsEvent(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
 	disp := &recordingDisp{}
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
 
 	task := &entity.Task{
 		ID:           "t1",
@@ -636,7 +648,7 @@ func TestOrchestratorResumeTaskRedispatchesAndEmitsEvent(t *testing.T) {
 func TestOrchestratorResumeTaskRejectsNonPausedTask(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
 
 	repo.tasks["t1"] = &entity.Task{
 		ID:           "t1",
@@ -662,7 +674,7 @@ func TestOrchestratorReopenPhaseMovesBackAndRedispatches(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
 	disp := &recordingDisp{}
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), disp)
 
 	repo.tasks["t1"] = &entity.Task{
 		ID:           "t1",
@@ -711,7 +723,7 @@ func TestOrchestratorReopenPhaseMovesBackAndRedispatches(t *testing.T) {
 func TestOrchestratorReopenPhaseRejectsNonPrecedingTarget(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
 
 	repo.tasks["t1"] = &entity.Task{
 		ID:           "t1",
@@ -745,7 +757,7 @@ func TestOrchestratorReopenPhaseRejectsNonPrecedingTarget(t *testing.T) {
 func TestOrchestratorReopenPhaseRejectsInactiveTask(t *testing.T) {
 	repo := newFakeTaskRepoSvc()
 	harness := &fakeHarness{}
-	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
+	orch := NewPhaseOrchestrator(repo, &fakePhaseOutputRepoSvc{}, &fakeSubtaskRepoSvc{}, harness, NewPromptBuilder("http://localhost:8080/api/v1"), &recordingDisp{})
 
 	repo.tasks["t1"] = &entity.Task{
 		ID:           "t1",

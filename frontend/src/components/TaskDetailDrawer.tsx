@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Task, PhaseOutput, PHASE_ORDER, PHASE_LABELS } from '../types/task';
+import { Task, PhaseOutput, Subtask, PHASE_ORDER, PHASE_LABELS } from '../types/task';
 import { api } from '../services/api';
 import { Lamp } from './Lamp';
 import { MarkdownView, SubtaskSummary, extractSubtasks } from './MarkdownView';
@@ -196,6 +196,7 @@ const TransitStrip: React.FC<{ task: Task }> = ({ task }) => {
 
 export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, onClose, onTaskChanged }) => {
   const [phaseOutputs, setPhaseOutputs] = useState<PhaseOutput[]>([]);
+  const [subtasks, setSubtasks] = useState<Subtask[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<string | false>(task?.current_phase ?? false);
 
@@ -222,6 +223,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
       .then((detail) => {
         if (cancelled) return;
         setPhaseOutputs(detail?.phase_outputs ?? []);
+        setSubtasks(detail?.subtasks ?? []);
         if (detail?.task) setLocalTask(detail.task);
         const have = (detail?.phase_outputs ?? []).map((p) => p.phase);
         setExpanded(have.includes(task.current_phase) ? task.current_phase : (have[have.length - 1] ?? false));
@@ -246,6 +248,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
     const detail = await api.getTaskDetail(t.id);
     if (detail?.task) setLocalTask(detail.task);
     setPhaseOutputs(detail?.phase_outputs ?? []);
+    setSubtasks(detail?.subtasks ?? []);
     onTaskChanged?.();
   };
 
@@ -538,6 +541,88 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, open, 
                   No failure reason was captured for this task.
                 </Typography>
               )}
+            </Box>
+          )}
+
+          {/* subtasks — the tracked checklist created in planning, with live
+              per-subtask status reported by the harness via MCP as it works. */}
+          <Typography sx={{ fontFamily: mono, fontSize: '0.56rem', letterSpacing: '0.14em', color: tokens.ink.faint, textTransform: 'uppercase', mb: 1 }}>
+            subtasks · {(subtasks ?? []).length} {subtasks?.length === 1 ? 'item' : 'items'}
+          </Typography>
+
+          {subtasks && subtasks.length > 0 ? (
+            <Box
+              sx={{
+                mb: 3,
+                border: `1px solid ${tokens.border.hair}`,
+                borderRadius: 1,
+                overflow: 'hidden',
+              }}
+            >
+              {subtasks.map((st, idx) => {
+                const done = st.status === 'completed';
+                const active = st.status === 'in_progress';
+                const dotColor = done ? tokens.signal.sage : active ? tokens.signal.cyan : tokens.border.strong;
+                return (
+                  <Box
+                    key={st.id}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 1,
+                      px: 1.25,
+                      py: 0.85,
+                      borderBottom: idx < subtasks.length - 1 ? `1px solid ${tokens.border.hair}` : 'none',
+                      bgcolor: active ? `${tokens.signal.cyan}0a` : 'transparent',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        mt: '2px',
+                        width: 9,
+                        height: 9,
+                        borderRadius: 0.5,
+                        border: `1px solid ${dotColor}`,
+                        bgcolor: done ? dotColor : 'transparent',
+                        flexShrink: 0,
+                        ...(active ? { boxShadow: `0 0 6px ${dotColor}88` } : {}),
+                      }}
+                    />
+                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                      <Typography
+                        sx={{
+                          fontFamily: sans,
+                          fontSize: '0.8rem',
+                          color: done ? tokens.ink.dim : tokens.ink.text,
+                          textDecoration: done ? 'line-through' : 'none',
+                          lineHeight: 1.35,
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {st.title}
+                      </Typography>
+                      <Typography
+                        sx={{
+                          fontFamily: mono,
+                          fontSize: '0.56rem',
+                          letterSpacing: '0.08em',
+                          textTransform: 'uppercase',
+                          color: dotColor,
+                          mt: 0.25,
+                        }}
+                      >
+                        {st.status.replace('_', ' ')}
+                      </Typography>
+                    </Box>
+                  </Box>
+                );
+              })}
+            </Box>
+          ) : (
+            <Box sx={{ py: 2, mb: 3, textAlign: 'center', border: `1px dashed ${tokens.border.hair}`, borderRadius: 1 }}>
+              <Typography sx={{ fontFamily: mono, fontSize: '0.68rem', color: tokens.ink.faint }}>
+                no subtasks created yet
+              </Typography>
             </Box>
           )}
 

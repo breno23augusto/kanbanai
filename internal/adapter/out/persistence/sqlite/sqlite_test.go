@@ -50,7 +50,7 @@ func TestMigrationsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 4 {
-		t.Errorf("expected 4 recorded migrations, got %d", count)
+	if count != 5 {
+		t.Errorf("expected 5 recorded migrations, got %d", count)
 	}
 }

@@ -14,6 +14,13 @@ type TaskOutput struct {
 	Priority     int           `json:"priority"`
 	Version      int           `json:"version"`
 	ErrorMessage string        `json:"error_message"`
+	// Subtasks carries the per-subtask status so the board card can render
+	// live progress. Populated by ListTasks and GetTask.
+	Subtasks      []SubtaskDTO  `json:"subtasks"`
+	// SubtaskSummary is the derived progress aggregate (total/completed/
+	// in_progress). Provided for convenience so consumers don't have to
+	// recompute it.
+	SubtaskSummary SubtaskSummary `json:"subtask_summary"`
 	CreatedAt    time.Time     `json:"created_at"`
 	UpdatedAt    time.Time     `json:"updated_at"`
 }

@@ -53,12 +53,14 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	taskRepo := repository.NewTaskRepositorySQLite(db)
 	eventLogRepo := repository.NewTaskEventLogRepositorySQLite(db)
 	phaseOutputRepo := repository.NewPhaseOutputRepositorySQLite(db)
+	subtaskRepo := repository.NewSubtaskRepositorySQLite(db)
 
 	container.Register("taskRepo", taskRepo)
 	container.Register("eventLogRepo", eventLogRepo)
 	container.Register("phaseOutputRepo", phaseOutputRepo)
+	container.Register("subtaskRepo", subtaskRepo)
 
-	taskWithPhasesQuery := query.NewTaskWithPhasesQuerySQLite(db)
+	taskWithPhasesQuery := query.NewTaskWithPhasesQuerySQLite(db, subtaskRepo)
 	taskTimelineQuery := query.NewTaskTimelineQuerySQLite(db)
 	container.Register("taskWithPhasesQuery", taskWithPhasesQuery)
 	container.Register("taskTimelineQuery", taskTimelineQuery)
@@ -95,10 +97,12 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	updateTaskUC := usecase.NewUpdateTask(taskRepo, dispatcher)
 	deleteTaskUC := usecase.NewDeleteTask(taskRepo, dispatcher)
 	getTaskUC := usecase.NewGetTask(taskWithPhasesQuery)
-	listTasksUC := usecase.NewListTasks(taskRepo)
+	listTasksUC := usecase.NewListTasks(taskRepo, subtaskRepo)
 	advancePhaseUC := usecase.NewAdvancePhase(taskRepo, phaseOutputRepo, dispatcher)
 	reportProgressUC := usecase.NewReportPhaseProgress(eventLogRepo, dispatcher)
 	savePhaseOutputUC := usecase.NewSavePhaseOutput(phaseOutputRepo, dispatcher)
+	createSubtasksUC := usecase.NewCreateSubtasks(subtaskRepo, dispatcher)
+	updateSubtaskStatusUC := usecase.NewUpdateSubtaskStatus(subtaskRepo, dispatcher)
 
 	container.Register("createTaskUseCase", createTaskUC)
 	container.Register("updateTaskUseCase", updateTaskUC)
@@ -108,10 +112,12 @@ func Initialize(cfg *config.Config) (*di.Container, error) {
 	container.Register("advancePhaseUseCase", advancePhaseUC)
 	container.Register("reportProgressUseCase", reportProgressUC)
 	container.Register("savePhaseOutputUseCase", savePhaseOutputUC)
+	container.Register("createSubtasksUseCase", createSubtasksUC)
+	container.Register("updateSubtaskStatusUseCase", updateSubtaskStatusUC)
 
 	// 8. Phase Orchestrator (created before handlers so they can depend on it)
 	orchestrator := service.NewPhaseOrchestrator(
-		taskRepo, phaseOutputRepo, harnessAdapter, promptBuilder, dispatcher,
+		taskRepo, phaseOutputRepo, subtaskRepo, harnessAdapter, promptBuilder, dispatcher,
 	)
 	container.Register("orchestrator", orchestrator)
 

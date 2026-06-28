@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"kanbanai/internal/domain/entity"
@@ -9,11 +10,27 @@ import (
 )
 
 type TaskWithPhasesQuerySQLite struct {
-	db *sql.DB
+	db          *sql.DB
+	subtaskRepo repository.SubtaskRepository
 }
 
-func NewTaskWithPhasesQuerySQLite(db *sql.DB) *TaskWithPhasesQuerySQLite {
-	return &TaskWithPhasesQuerySQLite{db: db}
+func NewTaskWithPhasesQuerySQLite(db *sql.DB, subtaskRepo repository.SubtaskRepository) *TaskWithPhasesQuerySQLite {
+	return &TaskWithPhasesQuerySQLite{db: db, subtaskRepo: subtaskRepo}
+}
+
+func (q *TaskWithPhasesQuerySQLite) loadSubtasks(ctx context.Context, taskID string) ([]entity.Subtask, error) {
+	if q.subtaskRepo == nil {
+		return nil, nil
+	}
+	items, err := q.subtaskRepo.FindByTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("query subtasks: %w", err)
+	}
+	out := make([]entity.Subtask, 0, len(items))
+	for _, st := range items {
+		out = append(out, *st)
+	}
+	return out, nil
 }
 
 func (q *TaskWithPhasesQuerySQLite) Get(taskID string) (*query.TaskWithPhasesResult, error) {
@@ -51,9 +68,15 @@ func (q *TaskWithPhasesQuerySQLite) Get(taskID string) (*query.TaskWithPhasesRes
 		outputs = append(outputs, po)
 	}
 
+	subtasks, err := q.loadSubtasks(context.Background(), taskID)
+	if err != nil {
+		return nil, err
+	}
+
 	return &query.TaskWithPhasesResult{
 		Task:         *task,
 		PhaseOutputs: outputs,
+		Subtasks:     subtasks,
 	}, nil
 }
 
@@ -102,9 +125,15 @@ func (q *TaskWithPhasesQuerySQLite) List(criteria repository.Criteria) ([]*query
 		}
 		oRows.Close()
 
+		subtasks, err := q.loadSubtasks(context.Background(), task.ID)
+		if err != nil {
+			return nil, err
+		}
+
 		results = append(results, &query.TaskWithPhasesResult{
 			Task:         *task,
 			PhaseOutputs: outputs,
+			Subtasks:     subtasks,
 		})
 	}
 

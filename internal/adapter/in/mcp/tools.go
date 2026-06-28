@@ -13,6 +13,8 @@ func RegisterTools(server *mcp.Server, container *di.Container) {
 	mcp.AddTool(server, completePhaseToolDef(), completePhaseHandler(container))
 	mcp.AddTool(server, reopenPhaseToolDef(), reopenPhaseHandler(container))
 	mcp.AddTool(server, getTaskToolDef(), getTaskHandler(container))
+	mcp.AddTool(server, createSubtasksToolDef(), createSubtasksHandler(container))
+	mcp.AddTool(server, updateSubtaskStatusToolDef(), updateSubtaskStatusHandler(container))
 }
 
 func jsonSchema(props map[string]any, required []string) json.RawMessage {

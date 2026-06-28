@@ -20,6 +20,7 @@ const orchestratorUpdateMaxRetries = 3
 type PhaseOrchestrator struct {
 	taskRepo        repository.TaskRepository
 	phaseOutputRepo repository.PhaseOutputRepository
+	subtaskRepo     repository.SubtaskRepository
 	harnessAdapter  port.HarnessPort
 	promptBuilder   *PromptBuilder
 	dispatcher      event.Dispatcher
@@ -30,6 +31,7 @@ type PhaseOrchestrator struct {
 func NewPhaseOrchestrator(
 	taskRepo repository.TaskRepository,
 	phaseOutputRepo repository.PhaseOutputRepository,
+	subtaskRepo repository.SubtaskRepository,
 	harnessAdapter port.HarnessPort,
 	promptBuilder *PromptBuilder,
 	dispatcher event.Dispatcher,
@@ -37,6 +39,7 @@ func NewPhaseOrchestrator(
 	return &PhaseOrchestrator{
 		taskRepo:        taskRepo,
 		phaseOutputRepo: phaseOutputRepo,
+		subtaskRepo:     subtaskRepo,
 		harnessAdapter:  harnessAdapter,
 		promptBuilder:   promptBuilder,
 		dispatcher:      dispatcher,
@@ -202,6 +205,18 @@ func (o *PhaseOrchestrator) dispatchPhase(ctx context.Context, task *entity.Task
 		}
 	}
 
+	// Implementation/review lanes (doing, validating, testing) work from the
+	// tracked subtask checklist created in planning. Inject it so the harness
+	// knows what to do and can report per-subtask progress. Non-fatal on error.
+	if phase == entity.PhaseDoing || phase == entity.PhaseValidating || phase == entity.PhaseTesting {
+		if text, err := o.loadSubtasksText(ctx, updated.ID); err != nil {
+			slog.Warn("orchestrator: failed to load subtasks",
+				"taskID", updated.ID, "phase", phase, "error", err)
+		} else {
+			data.Subtasks = text
+		}
+	}
+
 	prompt, err := o.promptBuilder.Build(string(phase), data)
 	if err != nil {
 		return fmt.Errorf("prompt build: %w", err)
@@ -264,6 +279,27 @@ func (o *PhaseOrchestrator) populatePriorContext(ctx context.Context, taskID str
 		data.ImplementationReport = block(entity.PhaseDoing)
 	}
 	return nil
+}
+
+// loadSubtasksText renders the task's tracked subtasks as an ordered,
+// status-annotated checklist suitable for injection into a phase prompt. It is
+// used by the doing/validating/testing lanes so the harness has the concrete
+// breakdown to work through and report against. Returns a "(no subtasks
+// created yet)" placeholder when none exist, prompting the harness to proceed
+// directly or fetch via get_task.
+func (o *PhaseOrchestrator) loadSubtasksText(ctx context.Context, taskID string) (string, error) {
+	items, err := o.subtaskRepo.FindByTask(ctx, taskID)
+	if err != nil {
+		return "", fmt.Errorf("find subtasks: %w", err)
+	}
+	if len(items) == 0 {
+		return "(no subtasks created yet — proceed by implementing the task directly, or call get_task to confirm)", nil
+	}
+	var b strings.Builder
+	for _, st := range items {
+		fmt.Fprintf(&b, "- [%s] %s (id: %s)\n", st.Status, st.Title, st.ID)
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
 }
 
 func (o *PhaseOrchestrator) KillProcess(taskID string) {

@@ -1,3 +1,21 @@
+export type SubtaskStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface Subtask {
+  id: string;
+  task_id: string;
+  title: string;
+  status: SubtaskStatus;
+  order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SubtaskSummary {
+  total: number;
+  completed: number;
+  in_progress: number;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -7,6 +25,8 @@ export interface Task {
   priority: number;
   version: number;
   error_message: string;
+  subtasks: Subtask[] | null;
+  subtask_summary: SubtaskSummary | null;
   created_at: string;
   updated_at: string;
 }
@@ -28,6 +48,7 @@ export interface PhaseOutput {
 export interface TaskDetail {
   task: Task;
   phase_outputs: PhaseOutput[] | null;
+  subtasks: Subtask[] | null;
 }
 
 export const PHASE_ORDER: Phase[] = [
